@@ -44,6 +44,7 @@
     <script>
       const byId = (id) => document.getElementById(id);
       let appStatus = null;
+      const authChannel = "BroadcastChannel" in window ? new BroadcastChannel("spotify-charts-auth") : null;
       const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
       function showBanner(message, isError = false) {
         const banner = byId("status-banner");
@@ -70,6 +71,7 @@
             showBanner("Spotify could not complete authorization. Check the registered callback URI and try again.", true);
           } else if (new URLSearchParams(location.search).get("auth") === "connected") {
             showBanner("Spotify is connected. Select a market and load a chart.");
+            authChannel?.postMessage("connected");
             history.replaceState({}, "", location.pathname);
           } else if (appStatus.connected) {
             hideBanner();
@@ -80,6 +82,9 @@
           showBanner(error.message, true);
         }
       }
+      authChannel?.addEventListener("message", (event) => {
+        if (event.data === "connected") loadStatus();
+      });
       async function loadCountries() {
         const countries = await requestJson("/api/countries");
         byId("country").innerHTML = countries.map((item) => `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)}</option>`).join("");
@@ -118,8 +123,10 @@
         byId("chart-content").innerHTML = `<table><thead><tr><th scope="col">Rank</th><th scope="col">Entry</th><th scope="col">${escapeHtml(metricLabel)}</th><th scope="col">Movement</th></tr></thead><tbody>${rows}</tbody></table>`;
       }
       byId("connect-button").addEventListener("click", () => {
-        if (appStatus?.configured) location.assign("/auth/login");
-        else showBanner("Add the Spotify client ID and secret as project environment variables, and register the callback URL shown above in your Spotify app.", true);
+        if (appStatus?.configured) {
+          window.open("/auth/login", "_blank", "noopener,noreferrer");
+          showBanner("Spotify sign-in opened in a new tab. Complete authorization there; this dashboard will update automatically. If no tab appears, allow pop-ups for this preview and retry.");
+        } else showBanner("Add the Spotify client ID and secret as project environment variables, and register the callback URL shown above in your Spotify app.", true);
       });
       byId("chart-form").addEventListener("submit", async (event) => {
         event.preventDefault();
