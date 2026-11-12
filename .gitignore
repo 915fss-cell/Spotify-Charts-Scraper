@@ -2,3 +2,4 @@ creds.conf
 .env
 .refresh_token
 __pycache__
+.venv/
