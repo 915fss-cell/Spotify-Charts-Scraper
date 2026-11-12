@@ -64,24 +64,30 @@ def get_refresh_token(server_class=HTTPServer, handler_class=AuthRequestHandler)
 
 
 class SpotifyCharts:
-    def __init__(self) -> None:
+    def __init__(self, access_token: str | None = None) -> None:
+        if access_token:
+            self.headers = {"Authorization": f"Bearer {access_token}"}
+            return
+
+        if not client_id or not client_secret or not redirect_uri or not redirect_port:
+            raise RuntimeError("Set Spotify client credentials and redirect settings before using the local OAuth flow.")
+
         if not path.exists(".refresh_token"):
             print("[!] Refresh Token Not Found. Login To Spotify!")
             get_refresh_token()
 
-        refresh_token = open(".refresh_token", "r").read()
+        with open(".refresh_token", "r", encoding="utf-8") as token_file:
+            stored_refresh_token = token_file.read().strip()
 
         refresh_token_url = "https://accounts.spotify.com/api/token"
-        data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+        data = {"grant_type": "refresh_token", "refresh_token": stored_refresh_token}
 
-        res = (
-            Client()
-            .post(refresh_token_url, auth=(client_id, client_secret), data=data)
-            .json()
-        )
+        with Client(timeout=15) as client:
+            response = client.post(refresh_token_url, auth=(client_id, client_secret), data=data)
+            response.raise_for_status()
+            token_data = response.json()
 
-        access_token = res["access_token"]
-        self.headers = {"Authorization": f"Bearer {access_token}"}
+        self.headers = {"Authorization": f"Bearer {token_data['access_token']}"}
 
     def get_countries(self) -> Countries:
         """
@@ -90,7 +96,16 @@ class SpotifyCharts:
 
         return Countries
 
-    async def daily_top_songs(self, country_code: str, date_: str = "latest") -> list:
+    async def _fetch_chart(self, url: str) -> dict:
+        async with AsyncClient(timeout=15) as client:
+            response = await client.get(url, headers=self.headers)
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Spotify returned an unexpected chart response.")
+        return payload
+
+    async def daily_top_songs(self, country_code: str, date_: str = "latest") -> dict:
         """
         :param country_code: Country code of the country eg. IN -> India
         :param date_: To get data for a specific date, By default its Latest. eg. 2022-12-24
@@ -99,12 +114,9 @@ class SpotifyCharts:
         """
         url = f"https://charts-spotify-com-service.spotify.com/auth/v0/charts/regional-{country_code.lower()}-daily/{date_}"
 
-        async with AsyncClient() as client:
-            response = await client.get(url, headers=self.headers)
-        response = response.json()
-        return response
+        return await self._fetch_chart(url)
 
-    async def daily_top_artists(self, country_code: str, date_: str = "latest") -> list:
+    async def daily_top_artists(self, country_code: str, date_: str = "latest") -> dict:
         """
         :param country_code: Country code of the country eg. IN -> India
         :param date_: To get data for a specific date, By default its Latest. eg. 2022-12-24
@@ -113,12 +125,9 @@ class SpotifyCharts:
         """
         url = f"https://charts-spotify-com-service.spotify.com/auth/v0/charts/artist-{country_code.lower()}-daily/{date_}"
 
-        async with AsyncClient() as client:
-            response = await client.get(url, headers=self.headers)
-        response = response.json()
-        return response
+        return await self._fetch_chart(url)
 
-    async def daily_viral_songs(self, country_code: str, date_: str = "latest") -> list:
+    async def daily_viral_songs(self, country_code: str, date_: str = "latest") -> dict:
         """
         :param country_code: Country code of the country eg. IN -> India
         :param date_: To get data for a specific date, By default its Latest. eg. 2022-12-24
@@ -128,12 +137,9 @@ class SpotifyCharts:
 
         url = f"https://charts-spotify-com-service.spotify.com/auth/v0/charts/viral-{country_code.lower()}-daily/{date_}"
 
-        async with AsyncClient() as client:
-            response = await client.get(url, headers=self.headers)
-        response = response.json()
-        return response
+        return await self._fetch_chart(url)
 
-    async def weekly_top_songs(self, country_code: str, date_="latest") -> list:
+    async def weekly_top_songs(self, country_code: str, date_="latest") -> dict:
         """
         :param country_code: Country code of the country eg. IN -> India
         :param date_: Week Start Date.
@@ -142,12 +148,9 @@ class SpotifyCharts:
         """
         url = f"https://charts-spotify-com-service.spotify.com/auth/v0/charts/regional-{country_code.lower()}-weekly/{date_}"
 
-        async with AsyncClient() as client:
-            response = await client.get(url, headers=self.headers)
-        response = response.json()
-        return response
+        return await self._fetch_chart(url)
 
-    async def weekly_top_artists(self, country_code: str, date_="latest") -> list:
+    async def weekly_top_artists(self, country_code: str, date_="latest") -> dict:
         """
         :param country_code: Country code of the country eg. IN -> India
         :param date_: Week Start Date.
@@ -157,12 +160,9 @@ class SpotifyCharts:
 
         url = f"https://charts-spotify-com-service.spotify.com/auth/v0/charts/artist-{country_code.lower()}-weekly/{date_}"
 
-        async with AsyncClient() as client:
-            response = await client.get(url, headers=self.headers)
-        response = response.json()
-        return response
+        return await self._fetch_chart(url)
 
-    async def weekly_top_albums(self, country_code: str, date_="latest") -> list:
+    async def weekly_top_albums(self, country_code: str, date_="latest") -> dict:
         """
         :param country_code: Country code of the country eg. IN -> India
         :param date_: To get data for a specific date, By default its Latest. eg. 2022-12-24
@@ -172,7 +172,4 @@ class SpotifyCharts:
 
         url = f"https://charts-spotify-com-service.spotify.com/auth/v0/charts/album-{country_code.lower()}-weekly/{date_}"
 
-        async with AsyncClient() as client:
-            response = await client.get(url, headers=self.headers)
-        response = response.json()
-        return response
+        return await self._fetch_chart(url)
