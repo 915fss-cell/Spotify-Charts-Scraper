@@ -140,10 +140,10 @@ class SpotifyCharts:
                     delay = max(float(retry_after), 0.25)
                 except (TypeError, ValueError):
                     delay = 0.5 * (2**attempt)
-                if response.status_code == 429:
-                    await _defer_chart_requests(min(delay, CHART_RATE_LIMIT_MAX_COOLDOWN))
-                else:
-                    await asyncio.sleep(delay)
+            if response.status_code == 429:
+                await _defer_chart_requests(min(delay, CHART_RATE_LIMIT_MAX_COOLDOWN))
+                response.raise_for_status()
+            await asyncio.sleep(delay)
             payload = response.json()
         if not isinstance(payload, dict):
             raise ValueError("Spotify returned an unexpected chart response.")

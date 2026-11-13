@@ -3,7 +3,7 @@
   if (!app) return;
 
   const { byId, requestJson, escapeHtml, spotifyLink, getCachedChart } = app;
-  const state = { cadence: "daily", entityType: "track", view: "release", marketScope: "all" };
+  const state = { cadence: "daily", entityType: "track", view: "release", marketScope: "global" };
   let activePage = "charts";
   let liveOverview = null;
   let liveKey = "";
@@ -30,6 +30,7 @@
 
   function setStatus(id, message, isError = false) {
     const element = byId(id);
+    if (!element) return;
     element.textContent = message;
     element.classList.toggle("error", isError);
   }
