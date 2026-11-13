@@ -1,3 +1,6 @@
+import asyncio
+from copy import deepcopy
+from time import monotonic
 from httpx import AsyncClient, Client
 from urllib.parse import urlparse, parse_qs
 from os import path
@@ -14,6 +17,28 @@ redirect_uri = spotify_settings.redirect_url
 redirect_port = spotify_settings.redirect_port
 
 redirect_url = f"{redirect_uri}:{redirect_port}"
+CHART_CACHE_TTL = 300
+CHART_REQUEST_INTERVAL = 2.0
+CHART_RATE_LIMIT_MAX_COOLDOWN = 120.0
+_chart_cache: dict[str, tuple[float, dict]] = {}
+_chart_request_lock = asyncio.Lock()
+_next_chart_request_at = 0.0
+
+
+async def _wait_for_chart_request_slot() -> None:
+    global _next_chart_request_at
+    async with _chart_request_lock:
+        now = monotonic()
+        delay = max(0.0, _next_chart_request_at - now)
+        _next_chart_request_at = max(now, _next_chart_request_at) + CHART_REQUEST_INTERVAL
+    if delay:
+        await asyncio.sleep(delay)
+
+
+async def _defer_chart_requests(delay: float) -> None:
+    global _next_chart_request_at
+    async with _chart_request_lock:
+        _next_chart_request_at = max(_next_chart_request_at, monotonic() + delay)
 
 
 class AuthRequestHandler(BaseHTTPRequestHandler):
@@ -97,15 +122,40 @@ class SpotifyCharts:
         return Countries
 
     async def _fetch_chart(self, url: str) -> dict:
+        cached = _chart_cache.get(url)
+        if cached and cached[0] > monotonic():
+            return deepcopy(cached[1])
+
         async with AsyncClient(timeout=15) as client:
-            response = await client.get(url, headers=self.headers)
-            response.raise_for_status()
+            for attempt in range(3):
+                await _wait_for_chart_request_slot()
+                response = await client.get(url, headers=self.headers)
+                if response.status_code not in {429, 500, 502, 503, 504}:
+                    response.raise_for_status()
+                    break
+                if attempt == 2:
+                    response.raise_for_status()
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = max(float(retry_after), 0.25)
+                except (TypeError, ValueError):
+                    delay = 0.5 * (2**attempt)
+                if response.status_code == 429:
+                    await _defer_chart_requests(min(delay, CHART_RATE_LIMIT_MAX_COOLDOWN))
+                else:
+                    await asyncio.sleep(delay)
             payload = response.json()
         if not isinstance(payload, dict):
             raise ValueError("Spotify returned an unexpected chart response.")
+
+        now = monotonic()
+        _chart_cache[url] = (now + CHART_CACHE_TTL, deepcopy(payload))
+        for cached_url, (expires_at, _) in list(_chart_cache.items()):
+            if expires_at <= now:
+                del _chart_cache[cached_url]
         return payload
 
-    async def search_entities(self, query: str, entity_type: str = "all", limit: int = 12) -> list[dict]:
+    async def search_entities(self, query: str, entity_type: str = "all", limit: int = 10) -> list[dict]:
         if entity_type not in {"all", "track", "artist"}:
             raise ValueError("Choose songs, artists, or both to search.")
 
@@ -214,6 +264,10 @@ class SpotifyCharts:
 
         url = f"https://charts-spotify-com-service.spotify.com/auth/v0/charts/artist-{country_code.lower()}-weekly/{date_}"
 
+        return await self._fetch_chart(url)
+
+    async def daily_top_albums(self, country_code: str, date_: str = "latest") -> dict:
+        url = f"https://charts-spotify-com-service.spotify.com/auth/v0/charts/album-{country_code.lower()}-daily/{date_}"
         return await self._fetch_chart(url)
 
     async def weekly_top_albums(self, country_code: str, date_="latest") -> dict:

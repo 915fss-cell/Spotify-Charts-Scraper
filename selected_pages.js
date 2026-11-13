@@ -2,233 +2,366 @@
   const app = window.Chartroom;
   if (!app) return;
 
-  const { byId, requestJson, escapeHtml } = app;
-  const historyTypes = {
-    daily_top_songs: "track",
-    weekly_top_songs: "track",
-    daily_top_artists: "artist",
-    weekly_top_artists: "artist",
-  };
-  let selections = [];
-  let searchResults = [];
+  const { byId, requestJson, escapeHtml, spotifyLink, getCachedChart } = app;
+  const state = { cadence: "daily", entityType: "track", view: "release", marketScope: "global" };
+  let activePage = "charts";
+  let liveOverview = null;
+  let liveKey = "";
+  let liveLoadedAt = 0;
+  let historyOverview = null;
   let historyChart = null;
+  let historyTrendData = null;
   let liveRequest = 0;
+  let historyRequest = 0;
+  const authChannel = "BroadcastChannel" in window ? new BroadcastChannel("spotify-charts-auth") : null;
+  const focusedArtists = [
+    { uri: "spotify:artist:06HL4z0CvFAxyc27GXpf02", name: "Taylor Swift" },
+    { uri: "spotify:artist:4UIOuc84ExWojcUzFGtbW8", name: "Felix" },
+  ];
+  const focusedArtistUris = focusedArtists.map((artist) => artist.uri);
+  const focusedArtistNames = focusedArtists.map((artist) => artist.name.toLowerCase());
+  const focusedTrackUri = "spotify:track:15fpZUMOQD9ONTjxITFXFT";
+
+  function focusedSelectionName(entityType = state.entityType) {
+    if (entityType === "artist") return "Taylor Swift and Felix";
+    if (entityType === "track") return "Taylor Swift, Felix, and Unfair";
+    return "Taylor Swift and Felix";
+  }
 
   function setStatus(id, message, isError = false) {
     const element = byId(id);
-    if (!element) return;
     element.textContent = message;
     element.classList.toggle("error", isError);
   }
 
-  function spotifyUrl(uri) {
-    const match = /^spotify:(track|artist):([A-Za-z0-9]+)$/.exec(uri || "");
-    return match ? `https://open.spotify.com/${match[1]}/${match[2]}` : null;
+  function currentKey() {
+    return `${state.cadence}:${state.entityType}:${state.marketScope}`;
   }
 
-  function artwork(imageUrl, title) {
-    return imageUrl
-      ? `<img class="entity-cover" src="${escapeHtml(imageUrl)}" alt="" loading="lazy" />`
-      : '<span class="entity-cover" aria-hidden="true"></span>';
+  function updateLiveActionLabel() {
+    byId("live-refresh").textContent = state.marketScope === "global" ? "Load all regions" : "Refresh all regions";
   }
 
-  function entityName(item) {
-    return item.entityName || "Untitled";
+  function chartTypeName() {
+    const names = { track: "songs", artist: "artists", album: "albums" };
+    return `${state.cadence === "daily" ? "Daily" : "Weekly"} top ${names[state.entityType]}`;
   }
 
-  function renderLiveGroup(type, items) {
-    const container = byId(type === "track" ? "live-songs" : "live-artists");
-    const count = byId(type === "track" ? "live-songs-count" : "live-artists-count");
-    count.textContent = `${items.length} followed`;
+  function entityTypeName() {
+    return { track: "song", artist: "artist", album: "album" }[state.entityType];
+  }
+
+  function updateFocusControls() {
+    document.querySelectorAll("[data-focus-key]").forEach((button) => {
+      button.setAttribute("aria-pressed", String(state[button.dataset.focusKey] === button.dataset.focusValue));
+    });
+    const isArtistChart = state.entityType === "artist";
+    const streamsOption = byId("history-metric").querySelector('option[value="streams"]');
+    streamsOption.disabled = isArtistChart;
+    if (isArtistChart && byId("history-metric").value === "streams") byId("history-metric").value = "rank";
+  }
+
+  function coverMarkup(imageUrl, title) {
+    if (imageUrl) return `<span class="focus-artwork"><img src="${escapeHtml(imageUrl)}" alt="" loading="lazy" /></span>`;
+    return `<span class="focus-artwork" aria-hidden="true">${escapeHtml((title || "♫").slice(0, 1).toUpperCase())}</span>`;
+  }
+
+  function formatNumber(value) {
+    if (value == null || value === "") return "—";
+    const number = Number(String(value).replaceAll(",", ""));
+    return Number.isFinite(number) ? number.toLocaleString() : String(value);
+  }
+
+  function movementMarkup(item) {
+    const current = Number(item.chartRank);
+    const previous = Number(item.previousRank);
+    if (!Number.isFinite(current) || !Number.isFinite(previous) || current <= 0 || previous <= 0) {
+      return '<span class="focus-movement same" aria-label="Rank movement unavailable">—</span>';
+    }
+    const change = previous - current;
+    if (change > 0) return `<span class="focus-movement up" aria-label="Up ${change} positions">↑${change}</span>`;
+    if (change < 0) return `<span class="focus-movement down" aria-label="Down ${Math.abs(change)} positions">↓${Math.abs(change)}</span>`;
+    return '<span class="focus-movement same" aria-label="No rank change">—</span>';
+  }
+
+  function chartDetails(item) {
+    const unit = state.cadence === "weekly" ? "w" : "d";
+    const details = [];
+    if (item.peakRank != null) details.push(`Peak: #${item.peakRank}`);
+    if (item.consecutiveAppearancesOnChart != null) details.push(`Cons: ${item.consecutiveAppearancesOnChart}${unit}`);
+    if (item.appearancesOnChart != null) details.push(`${state.cadence === "weekly" ? "WoC" : "Appearances"}: ${item.appearancesOnChart}${unit}`);
+    if (!details.length && item.entryDate) details.push(`Since ${item.entryDate}`);
+    return details.join(" · ") || "Chart details unavailable";
+  }
+
+  function trendButton(entityUri, entityName) {
+    return `<button class="quiet-button focus-trend-button" type="button" data-history-uri="${escapeHtml(entityUri)}" aria-label="View ${escapeHtml(entityName)} history across regions">View trend</button>`;
+  }
+
+  function releaseRegionRow(item, showTrend = false) {
+    return `<div class="focus-data-row"><div class="focus-row-rank">${escapeHtml(item.chartRank ?? "—")}${movementMarkup(item)}</div><div class="focus-row-copy"><strong class="focus-row-title">${escapeHtml(item.regionName)}</strong><span class="focus-row-subtitle">${escapeHtml(chartDetails(item))}</span></div><div class="focus-row-metric"><strong>${escapeHtml(formatNumber(item.metricValue ?? item.streamCount))}</strong><span>${escapeHtml((item.metricType || (item.streamCount == null ? "rank" : "streams")).toLowerCase())}</span>${showTrend ? trendButton(item.entityUri, item.entityName) : ""}</div></div>`;
+  }
+
+  function regionEntryRow(item) {
+    const url = spotifyLink(item.entityUri);
+    const title = escapeHtml(item.entityName || "Untitled");
+    const titleMarkup = url
+      ? `<a class="focus-row-title" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${title}</a>`
+      : `<strong class="focus-row-title">${title}</strong>`;
+    const subtitle = item.artistNames || (state.entityType === "artist" ? "Selected artist" : "");
+    const artwork = item.imageUrl
+      ? `<img class="focus-row-art" src="${escapeHtml(item.imageUrl)}" alt="" loading="lazy" />`
+      : '<span class="focus-row-art" aria-hidden="true"></span>';
+    return `<div class="focus-data-row has-art"><div class="focus-row-rank">${escapeHtml(item.chartRank ?? "—")}${movementMarkup(item)}</div>${artwork}<div class="focus-row-copy">${titleMarkup}<span class="focus-row-subtitle">${escapeHtml(subtitle)}</span></div><div class="focus-row-metric"><strong>${escapeHtml(formatNumber(item.metricValue ?? item.streamCount))}</strong><span>${escapeHtml((item.metricType || (item.streamCount == null ? "rank" : "streams")).toLowerCase())}</span>${item.entityUri ? trendButton(item.entityUri, item.entityName) : ""}</div></div>`;
+  }
+
+  function renderReleaseCard(release, isHistory = false) {
+    const url = spotifyLink(release.entityUri);
+    const title = escapeHtml(release.entityName || "Untitled");
+    const titleMarkup = url
+      ? `<a class="focus-release-title" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${title}</a>`
+      : `<strong class="focus-release-title">${title}</strong>`;
+    const artistNames = release.artistNames || (state.entityType === "artist" ? "Selected artist" : entityTypeName());
+    const regions = release.regions || [];
+    return `<article class="focus-release-card"><header class="focus-release-heading">${coverMarkup(release.imageUrl, release.entityName)}<div class="focus-release-copy">${titleMarkup}<p class="focus-release-subtitle">${escapeHtml(artistNames)}</p></div><span class="focus-region-count">${regions.length} ${regions.length === 1 ? "region" : "regions"}</span></header><div class="focus-data-list">${regions.map((region) => releaseRegionRow(region, isHistory)).join("")}</div></article>`;
+  }
+
+  function renderRegionCard(region, isHistory = false) {
+    const entries = region.entries || [];
+    const subtitle = isHistory ? `${entries.length} saved releases` : chartTypeName();
+    const date = !isHistory && region.chartDate ? `<time class="focus-date">${escapeHtml(region.chartDate)}</time>` : "";
+    return `<article class="focus-region-card"><header class="focus-card-title"><strong>${escapeHtml(region.regionName)}</strong><span>${escapeHtml(subtitle)}</span>${date}</header><div class="focus-data-list">${entries.map((entry) => regionEntryRow(entry)).join("")}</div></article>`;
+  }
+
+  function renderResultCards(containerId, releases, regions, isHistory = false) {
+    const container = byId(containerId);
+    const items = state.view === "release" ? releases : regions;
     if (!items.length) {
-      container.innerHTML = '<p class="entity-empty">No selections yet. Use Manage selection to add songs or artists.</p>';
+      container.innerHTML = `<p class="focus-empty">No ${escapeHtml(focusedSelectionName())} ${escapeHtml(entityTypeName())} chart entries were found in ${isHistory ? "the saved history range" : "the current charts"}.${isHistory ? " More history appears as regional chart snapshots are collected." : ""}</p>`;
       return;
     }
-
-    container.innerHTML = items.map((item) => {
-      const url = spotifyUrl(item.entityUri);
-      const title = escapeHtml(entityName(item));
-      const link = url
-        ? `<a class="entity-title" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${title}</a>`
-        : `<span class="entity-title">${title}</span>`;
-      const subtitle = item.artistNames || (item.inChart ? "In the latest chart" : "Not in the latest chart");
-      const metricValue = item.metricValue == null ? null : String(item.metricValue);
-      const numericMetric = metricValue == null ? Number.NaN : Number(metricValue.replaceAll(",", ""));
-      const formattedMetric = Number.isFinite(numericMetric) ? numericMetric.toLocaleString() : metricValue;
-      const metric = formattedMetric != null
-        ? `${escapeHtml(formattedMetric)} ${escapeHtml(item.metricType || "")}`
-        : "No metric returned";
-      const rank = item.inChart && item.chartRank != null ? `#${escapeHtml(item.chartRank)}` : "—";
-      return `<article class="entity-row">${artwork(item.imageUrl, item.entityName)}<div class="entity-copy">${link}<div class="entity-subtitle">${escapeHtml(subtitle)}</div></div><div class="entity-metrics"><div class="entity-rank">${rank}</div><div class="entity-streams">${item.inChart ? metric : "Outside current chart"}</div></div></article>`;
-    }).join("");
+    container.innerHTML = state.view === "release"
+      ? items.map((release) => renderReleaseCard(release, isHistory)).join("")
+      : items.map((region) => renderRegionCard(region, isHistory)).join("");
   }
 
-  async function loadLiveData() {
-    const requestId = ++liveRequest;
-    const button = byId("live-refresh");
-    button.disabled = true;
-    button.textContent = "Loading…";
-    setStatus("live-status", "Loading the latest available charts…");
-    const params = new URLSearchParams({
-      country: byId("live-country").value || "GLOBAL",
-      cadence: byId("live-cadence").value || "daily",
-    });
+  function renderLive(payload) {
+    byId("live-results-title").textContent = state.view === "release"
+      ? `${focusedSelectionName()} ${state.entityType === "artist" ? "in the artist chart" : `${state.entityType === "track" ? "songs" : "albums"} charting now`}`
+      : `${chartTypeName()} by region`;
+    const count = state.view === "release" ? payload.releases.length : payload.regions.length;
+    const matchingRegionLabel = payload.matchingRegions === 1 ? "region" : "regions";
+    byId("live-results-count").textContent = state.view === "release"
+      ? `${count} ${count === 1 ? "result" : "results"} · ${payload.matchingRegions} ${matchingRegionLabel}`
+      : `${count} regions · ${payload.marketsScanned} markets scanned`;
+    renderResultCards("live-results", payload.releases, payload.regions);
+    const failures = payload.failedRegions?.length || 0;
+    const marketMessage = payload.marketScope === "global"
+      ? "Global chart loaded. Scan all regions to find more placements."
+      : `${payload.marketsScanned} of ${payload.marketsTotal} markets scanned.`;
+    const regionLabel = payload.matchingRegions === 1 ? "region" : "regions";
+    const message = `${payload.artist.entityName}: ${payload.matchingRegions} ${regionLabel} charting ${entityTypeName()}s in the ${state.cadence} charts. ${marketMessage}`;
+    const storageMessage = payload.historyStorageAvailable == null
+      ? ""
+      : payload.historyStorageAvailable
+        ? `${payload.historySavedRegions} regional snapshots saved for History.`
+        : "Live charts loaded; history storage is unavailable right now.";
+    const partialMessage = failures ? ` ${failures} regions could not be loaded.` : "";
+    setStatus("live-status", `${message}${storageMessage ? ` ${storageMessage}` : ""}${partialMessage}`, failures > 0 && payload.marketsScanned === 0);
+    updateLiveActionLabel();
+  }
 
+  function buildGlobalOverview(chart) {
+    const chartDate = String(chart.displayChart?.date || "Latest");
+    const metadataKey = { track: "trackMetadata", artist: "artistMetadata", album: "albumMetadata" }[state.entityType];
+    const entries = (chart.entries || []).filter((entry) => {
+      const metadata = entry[metadataKey] || {};
+      if (state.entityType === "artist") {
+        const uri = metadata.artistUri || entry.artistUri;
+        const name = String(metadata.artistName || "").toLowerCase();
+        return focusedArtistUris.includes(uri) || focusedArtistNames.includes(name);
+      }
+      const entityUri = metadata.trackUri || metadata.albumUri || entry.trackUri || entry.albumUri;
+      if (state.entityType === "track" && entityUri === focusedTrackUri) return true;
+      return (metadata.artists || []).some((artist) => artist && (
+        focusedArtistUris.includes(artist.spotifyUri || artist.uri)
+        || focusedArtistNames.includes(String(artist.name || "").toLowerCase())
+      ));
+    }).map((entry) => {
+      const metadata = entry[metadataKey] || {};
+      const stats = entry.chartEntryData || {};
+      const metric = stats.rankingMetric || {};
+      const uri = metadata.trackUri || metadata.artistUri || metadata.albumUri || entry.trackUri || entry.artistUri || entry.albumUri;
+      if (!uri) return null;
+      return {
+        entityUri: uri,
+        entityType: state.entityType,
+        entityName: metadata.trackName || metadata.artistName || metadata.albumName || "Untitled",
+        artistNames: state.entityType === "artist" ? (metadata.artistName || "Selected artist") : (metadata.artists || []).map((artist) => artist?.name).filter(Boolean).join(", " ),
+        imageUrl: metadata.displayImageUri || null,
+        regionCode: "GLOBAL",
+        regionName: "Global",
+        chartRank: stats.currentRank,
+        previousRank: stats.previousRank,
+        peakRank: stats.peakRank,
+        consecutiveAppearancesOnChart: stats.consecutiveAppearancesOnChart,
+        appearancesOnChart: stats.appearancesOnChart,
+        entryDate: stats.entryDate,
+        metricType: metric.type,
+        metricValue: metric.value ?? null,
+        chartDate,
+      };
+    }).filter(Boolean);
+    const regions = entries.length ? [{ regionCode: "GLOBAL", regionName: "Global", chartDate, entries }] : [];
+    const releases = entries.map((entry) => ({
+      entityUri: entry.entityUri,
+      entityType: entry.entityType,
+      entityName: entry.entityName,
+      artistNames: entry.artistNames,
+      imageUrl: entry.imageUrl,
+      regions: [{
+        regionCode: entry.regionCode,
+        regionName: entry.regionName,
+        chartDate: entry.chartDate,
+        chartRank: entry.chartRank,
+        previousRank: entry.previousRank,
+        peakRank: entry.peakRank,
+        consecutiveAppearancesOnChart: entry.consecutiveAppearancesOnChart,
+        appearancesOnChart: entry.appearancesOnChart,
+        entryDate: entry.entryDate,
+        metricType: entry.metricType,
+        metricValue: entry.metricValue,
+      }],
+    }));
+    return {
+      artist: { entityName: "Taylor Swift and Felix" },
+      cadence: state.cadence,
+      entityType: state.entityType,
+      chartType: `${state.cadence}_top_${{ track: "songs", artist: "artists", album: "albums" }[state.entityType]}`,
+      marketScope: "global",
+      marketsTotal: 1,
+      marketsScanned: 1,
+      matchingRegions: regions.length,
+      failedRegions: [],
+      releases,
+      regions,
+    };
+  }
+
+  async function fetchLiveOverview(refresh = false) {
+    let payload;
+    if (state.marketScope === "global") {
+      const chartType = `${state.cadence}_top_${{ track: "songs", artist: "artists", album: "albums" }[state.entityType]}`;
+      const cachedChart = getCachedChart(chartType, "GLOBAL", "latest");
+      const params = new URLSearchParams({ type: chartType, country: "GLOBAL", date: "latest" });
+      const chart = cachedChart || await requestJson(`/api/charts?${params}`);
+      payload = buildGlobalOverview(chart);
+    } else {
+      const params = new URLSearchParams({ cadence: state.cadence, entity_type: state.entityType, scope: "all" });
+      if (refresh) params.set("refresh", "true");
+      payload = await requestJson(`/api/focused/live?${params}`);
+    }
+    liveOverview = payload;
+    liveKey = currentKey();
+    liveLoadedAt = Date.now();
+    return payload;
+  }
+
+  async function loadFocusedLive(refresh = false) {
+    const requestId = ++liveRequest;
+    byId("live-refresh").disabled = true;
+    byId("live-refresh").textContent = state.marketScope === "global" ? "Loading Global…" : "Loading regions…";
+    byId("live-results-count").textContent = state.marketScope === "global" ? "Loading Global chart…" : "Scanning all Spotify regions…";
+    setStatus("live-status", state.marketScope === "global"
+      ? `Loading ${focusedSelectionName()} ${entityTypeName()} chart for Global…`
+      : `Loading ${focusedSelectionName()} ${entityTypeName()} charts across all regions…`);
     try {
-      const payload = await requestJson(`/api/selected/live?${params}`);
-      if (requestId !== liveRequest) return;
-      renderLiveGroup("track", payload.songs || []);
-      renderLiveGroup("artist", payload.artists || []);
-      const total = (payload.songs || []).length + (payload.artists || []).length;
-      const hasCurrent = [...(payload.songs || []), ...(payload.artists || [])].some((item) => item.inChart);
-      setStatus("live-status", total
-        ? `${hasCurrent ? "Latest chart data loaded" : "No selected entities are in this chart"}. Current snapshots are saved to history when available.`
-        : "Add songs or artists to your watchlist to get started.");
+      const payload = await fetchLiveOverview(refresh);
+      if (requestId === liveRequest && activePage === "live") renderLive(payload);
     } catch (error) {
-      if (requestId === liveRequest) setStatus("live-status", error.message, true);
+      if (requestId === liveRequest) {
+        if (state.marketScope === "all" && liveOverview?.marketScope === "global") {
+          state.marketScope = "global";
+          renderLive(liveOverview);
+          setStatus("live-status", `The full regional scan failed: ${error.message} The Global chart is still shown.`, true);
+        } else {
+          byId("live-results-count").textContent = "Charts unavailable";
+          byId("live-results").innerHTML = `<p class="focus-empty">${escapeHtml(error.message)}</p>`;
+          setStatus("live-status", error.message, true);
+        }
+      }
     } finally {
       if (requestId === liveRequest) {
-        button.disabled = false;
-        button.textContent = "Refresh live data";
+        byId("live-refresh").disabled = false;
+        updateLiveActionLabel();
       }
     }
-  }
-
-  function renderSelectionRow(item, saved) {
-    const uri = item.entityUri;
-    const alreadySaved = saved || selections.some((selection) => selection.entityUri === uri);
-    const button = saved
-      ? `<button class="selection-action remove" type="button" data-remove-uri="${escapeHtml(uri)}">Remove</button>`
-      : `<button class="selection-action" type="button" data-add-uri="${escapeHtml(uri)}" ${alreadySaved ? "disabled" : ""}>${alreadySaved ? "Added" : "Add"}</button>`;
-    const typeLabel = item.entityType === "artist" ? "Artist" : "Song";
-    const subtitle = item.artistNames || typeLabel;
-    return `<article class="selection-item">${artwork(item.imageUrl, item.entityName)}<div class="entity-copy"><span class="entity-title">${escapeHtml(entityName(item))}</span><span class="selection-kind">${escapeHtml(subtitle)}</span></div>${button}</article>`;
-  }
-
-  function renderSelections() {
-    const savedList = byId("selection-list");
-    savedList.innerHTML = selections.length
-      ? selections.map((item) => renderSelectionRow(item, true)).join("")
-      : '<p class="selection-empty">Your saved selection is empty.</p>';
-    byId("selection-results").innerHTML = searchResults.length
-      ? searchResults.map((item) => renderSelectionRow(item, false)).join("")
-      : '<p class="selection-empty">Search results will appear here.</p>';
-    populateHistoryEntities();
-  }
-
-  function currentHistoryType() {
-    return historyTypes[byId("history-type").value] || "track";
-  }
-
-  function populateHistoryEntities() {
-    const type = currentHistoryType();
-    const options = selections.filter((item) => item.entityType === type);
-    byId("history-backfill").disabled = options.length === 0;
-    const select = byId("history-entity");
-    const previousValue = select.value;
-    select.innerHTML = options.length
-      ? options.map((item) => `<option value="${escapeHtml(item.entityUri)}">${escapeHtml(entityName(item))}</option>`).join("")
-      : `<option value="">No selected ${type === "track" ? "songs" : "artists"}</option>`;
-    if (options.some((item) => item.entityUri === previousValue)) select.value = previousValue;
-    const streamsOption = byId("history-metric").querySelector('option[value="streams"]');
-    streamsOption.disabled = type === "artist";
-    if (type === "artist" && byId("history-metric").value === "streams") byId("history-metric").value = "rank";
-  }
-
-  async function loadSelections() {
-    try {
-      selections = await requestJson("/api/selections");
-      renderSelections();
-      return selections;
-    } catch (error) {
-      setStatus("selection-status", error.message, true);
-      throw error;
-    }
-  }
-
-  async function searchSpotify(event) {
-    event.preventDefault();
-    const query = byId("selection-query").value.trim();
-    const button = byId("selection-search-button");
-    if (query.length < 2) return;
-    button.disabled = true;
-    button.textContent = "Searching…";
-    setStatus("selection-status", "Searching Spotify…");
-    try {
-      const params = new URLSearchParams({ query, entity_type: byId("selection-type").value, limit: "12" });
-      const payload = await requestJson(`/api/search?${params}`);
-      searchResults = payload.items || [];
-      renderSelections();
-      setStatus("selection-status", `${searchResults.length} Spotify results found.`);
-    } catch (error) {
-      searchResults = [];
-      renderSelections();
-      setStatus("selection-status", error.message, true);
-    } finally {
-      button.disabled = false;
-      button.textContent = "Search";
-    }
-  }
-
-  async function addSelection(uri) {
-    const item = searchResults.find((result) => result.entityUri === uri);
-    if (!item) return;
-    setStatus("selection-status", `Adding ${entityName(item)}…`);
-    try {
-      await requestJson("/api/selections", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          entity_type: item.entityType,
-          entity_uri: item.entityUri,
-          entity_name: item.entityName,
-          artist_names: item.artistNames || "",
-          image_url: item.imageUrl || null,
-        }),
-      });
-      await loadSelections();
-      renderSelections();
-      setStatus("selection-status", `${entityName(item)} added to your saved selection.`);
-      if (location.hash === "#live") setStatus("live-status", "Selection saved. Refresh live data to update its current chart position.");
-    } catch (error) {
-      setStatus("selection-status", error.message, true);
-    }
-  }
-
-  async function removeSelection(uri) {
-    const item = selections.find((selection) => selection.entityUri === uri);
-    try {
-      await requestJson(`/api/selections/${encodeURIComponent(uri)}`, { method: "DELETE" });
-      selections = selections.filter((selection) => selection.entityUri !== uri);
-      renderSelections();
-      setStatus("selection-status", `${entityName(item || {})} removed from your selection. Existing snapshots are retained.`);
-      if (location.hash === "#live") {
-        renderLiveGroup("track", selections.filter((selection) => selection.entityType === "track").map((selection) => ({ ...selection, inChart: false })));
-        renderLiveGroup("artist", selections.filter((selection) => selection.entityType === "artist").map((selection) => ({ ...selection, inChart: false })));
-      }
-    } catch (error) {
-      setStatus("selection-status", error.message, true);
-    }
-  }
-
-  function renderHistoryTable(points, metric) {
-    const rows = [...points].reverse().slice(0, 12);
-    if (!rows.length) {
-      byId("history-table").innerHTML = '<p class="entity-empty">No snapshots are available for this selection and market yet.</p>';
-      return;
-    }
-    const metricLabel = metric === "rank" ? "Chart rank" : "Chart streams";
-    byId("history-table").innerHTML = `<table><thead><tr><th scope="col">Chart date</th><th scope="col">${metricLabel}</th><th scope="col">Rank</th><th scope="col">Streams</th></tr></thead><tbody>${rows.map((point) => `<tr><td>${escapeHtml(point.chartDate)}</td><td>${metric === "rank" ? escapeHtml(point.chartRank ?? "—") : escapeHtml(point.streamCount == null ? "—" : Number(point.streamCount).toLocaleString())}</td><td>${escapeHtml(point.chartRank ?? "—")}</td><td>${escapeHtml(point.streamCount == null ? "—" : Number(point.streamCount).toLocaleString())}</td></tr>`).join("")}</tbody></table>`;
   }
 
   function renderHistory(payload) {
+    historyOverview = payload;
+    historyTrendData = null;
+    byId("history-chart-card").hidden = true;
+    const covers = new Map((liveOverview?.releases || []).map((release) => [release.entityUri, release.imageUrl]));
+    payload.releases.forEach((release) => { release.imageUrl = covers.get(release.entityUri) || null; });
+    byId("history-results-title").textContent = state.view === "release" ? `${focusedSelectionName()} history by release` : `${focusedSelectionName()} history by region`;
+    byId("history-results-count").textContent = `${payload.releases.length} releases · ${payload.regions.length} regions · ${payload.snapshotRows.toLocaleString()} snapshots`;
+    renderResultCards("history-results", payload.releases, payload.regions, true);
+    const empty = payload.snapshotRows === 0;
+    const nextStep = empty ? "No saved snapshots are available in this range yet. Current regional charts will be captured as they load." : "Choose View trend on a release to compare its rank or streams across regions.";
+    setStatus("selected-history-status", `${payload.snapshotRows.toLocaleString()} ${focusedSelectionName()} ${entityTypeName()} snapshots across ${payload.regions.length} regions. ${nextStep}`);
+    byId("history-chart").hidden = true;
+    byId("history-empty").hidden = false;
+    byId("history-empty").textContent = "Choose a release below to compare its chart history across regions.";
+    byId("history-chart-title").textContent = `${focusedSelectionName()} history by region`;
+    byId("history-chart-range").textContent = "Choose a release to view its trend";
+    if (historyChart) {
+      historyChart.destroy();
+      historyChart = null;
+    }
+  }
+
+  async function loadFocusedHistory(refreshLive = false) {
+    const requestId = ++historyRequest;
+    setStatus("selected-history-status", `Loading ${focusedSelectionName()} snapshots across regions…`);
+    try {
+      const key = currentKey();
+      if (refreshLive || liveKey !== key || Date.now() - liveLoadedAt > 120000) {
+        await fetchLiveOverview(refreshLive);
+      }
+      if (requestId !== historyRequest) return;
+      const params = new URLSearchParams({
+        cadence: state.cadence,
+        entity_type: state.entityType,
+        range: byId("history-range").value,
+      });
+      const payload = await requestJson(`/api/focused/history?${params}`);
+      if (requestId === historyRequest && activePage === "history") renderHistory(payload);
+    } catch (error) {
+      if (requestId === historyRequest) {
+        byId("history-results-count").textContent = "History unavailable";
+        byId("history-results").innerHTML = `<p class="focus-empty">${escapeHtml(error.message)}</p>`;
+        setStatus("selected-history-status", error.message, true);
+      }
+    }
+  }
+
+  function renderHistoryTrend(payload) {
+    historyTrendData = payload;
     const points = payload.points || [];
     const metric = byId("history-metric").value;
-    const entity = payload.entity;
     const canvas = byId("history-chart");
     const empty = byId("history-empty");
-    const values = points.map((point) => metric === "rank" ? point.chartRank : point.streamCount);
-    const hasValues = values.some((value) => value != null);
+    const labels = [...new Set(points.map((point) => point.chartDate))].sort();
+    const regions = [...new Set(points.map((point) => point.regionCode))].sort((left, right) => {
+      if (left === "GLOBAL") return -1;
+      if (right === "GLOBAL") return 1;
+      const leftName = points.find((point) => point.regionCode === left)?.regionName || left;
+      const rightName = points.find((point) => point.regionCode === right)?.regionName || right;
+      return leftName.localeCompare(rightName);
+    });
+    const palette = ["#187a45", "#3478c5", "#e37b26", "#8b5cc7", "#ca4f69", "#148b99", "#6d7c2e", "#525f73"];
+    const hasValues = points.some((point) => (metric === "rank" ? point.chartRank : point.streamCount) != null);
     if (historyChart) {
       historyChart.destroy();
       historyChart = null;
@@ -236,134 +369,72 @@
     canvas.hidden = !hasValues;
     empty.hidden = hasValues;
     if (hasValues && window.Chart) {
+      const datasets = regions.map((regionCode, index) => {
+        const regionPoints = points.filter((point) => point.regionCode === regionCode);
+        const values = new Map(regionPoints.map((point) => [point.chartDate, metric === "rank" ? point.chartRank : point.streamCount]));
+        return {
+          label: regionPoints[0]?.regionName || regionCode,
+          data: labels.map((label) => values.get(label) ?? null),
+          borderColor: palette[index % palette.length],
+          backgroundColor: palette[index % palette.length] + "20",
+          borderWidth: 2,
+          pointRadius: labels.length > 40 ? 0 : 2,
+          pointHoverRadius: 5,
+          tension: 0.25,
+          spanGaps: false,
+        };
+      });
       historyChart = new window.Chart(canvas.getContext("2d"), {
         type: "line",
-        data: {
-          labels: points.map((point) => point.chartDate),
-          datasets: [{
-            label: metric === "rank" ? "Chart rank" : "Chart streams",
-            data: values,
-            borderColor: "#b8f26b",
-            backgroundColor: "rgba(184,242,107,.12)",
-            borderWidth: 2,
-            pointRadius: points.length > 40 ? 0 : 2,
-            pointHoverRadius: 5,
-            tension: 0.28,
-            fill: true,
-            spanGaps: false,
-          }],
-        },
+        data: { labels, datasets },
         options: {
           responsive: true,
           maintainAspectRatio: false,
           interaction: { intersect: false, mode: "index" },
           plugins: {
-            legend: { display: false },
+            legend: { display: regions.length > 1, position: "bottom", labels: { color: "#64748b", usePointStyle: true, boxWidth: 8 } },
             tooltip: { callbacks: { label: (context) => `${context.dataset.label}: ${Number(context.parsed.y).toLocaleString()}` } },
           },
           scales: {
-            x: { ticks: { color: "#92998d", maxTicksLimit: 8 }, grid: { color: "rgba(146,153,141,.10)" } },
+            x: { ticks: { color: "#7b8798", maxTicksLimit: 8 }, grid: { color: "rgba(100,116,139,.10)" } },
             y: {
               reverse: metric === "rank",
               beginAtZero: metric === "streams",
-              ticks: { color: "#92998d", callback: (value) => Number(value).toLocaleString() },
-              grid: { color: "rgba(146,153,141,.10)" },
+              ticks: { color: "#7b8798", callback: (value) => Number(value).toLocaleString() },
+              grid: { color: "rgba(100,116,139,.10)" },
             },
           },
         },
       });
     }
-    byId("history-chart-title").textContent = entity ? `${entity.entityName} · ${metric === "rank" ? "chart rank" : "chart streams"}` : "Chart history";
-    byId("history-chart-range").textContent = points.length ? `${points.length} snapshots · ${payload.country}` : "No data loaded";
-    renderHistoryTable(points, metric);
-    if (!entity) setStatus("history-status", "Add a song or artist matching this chart type, then load live data to begin collecting history.");
-    else if (!points.length) setStatus("history-status", `No stored snapshots for ${entity.entityName} in this market yet. Refresh Live selected to collect the latest snapshot.`);
-    else setStatus("history-status", `${points.length} stored chart snapshots for ${entity.entityName}.`);
+    const entityName = payload.entity?.entityName || focusedSelectionName();
+    byId("history-chart-card").hidden = false;
+    byId("history-chart-title").textContent = `${entityName} · ${metric === "rank" ? "rank" : "streams"} by region`;
+    byId("history-chart-range").textContent = `${points.length} snapshots · ${regions.length} regions`;
+    if (!hasValues) empty.textContent = "No saved chart snapshots were found for this release in the selected range.";
+    setStatus("selected-history-status", `${points.length.toLocaleString()} stored snapshots for ${entityName} across ${regions.length} regions.`);
+    byId("history-chart-card").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  async function loadHistory() {
-    const chartType = byId("history-type").value;
-    const entityUri = byId("history-entity").value;
-    if (!entityUri) {
-      renderHistory({ entity: null, points: [], country: byId("history-country").value });
-      return;
-    }
-    setStatus("history-status", "Loading stored snapshots…");
+  async function viewHistoryTrend(entityUri) {
     const params = new URLSearchParams({
-      chart_type: chartType,
-      country: byId("history-country").value || "GLOBAL",
       entity_uri: entityUri,
+      cadence: state.cadence,
+      entity_type: state.entityType,
       range: byId("history-range").value,
     });
+    setStatus("selected-history-status", "Loading the release history across regions…");
     try {
-      const payload = await requestJson(`/api/selected/history?${params}`);
-      renderHistory(payload);
+      const payload = await requestJson(`/api/focused/history/trend?${params}`);
+      renderHistoryTrend(payload);
     } catch (error) {
-      setStatus("history-status", error.message, true);
-    }
-  }
-
-  async function backfillHistory() {
-    const chartType = byId("history-type").value;
-    const country = byId("history-country").value || "GLOBAL";
-    const entityType = historyTypes[chartType];
-    const entityUris = selections.filter((item) => item.entityType === entityType).map((item) => item.entityUri);
-    if (!entityUris.length) {
-      setStatus("history-status", `Add a ${entityType === "track" ? "song" : "artist"} to your selection first.`, true);
-      return;
-    }
-
-    const button = byId("history-backfill");
-    button.disabled = true;
-    button.textContent = "Loading current chart…";
-    setStatus("history-status", "Loading the latest chart to set the history target…");
-    try {
-      const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
-      const chartPayload = await requestJson(`/api/charts?${chartParams}`);
-      const historyInfo = chartPayload.chartHistory;
-      if (!historyInfo?.supported) {
-        setStatus("history-status", historyInfo?.reason || "This chart cannot be backfilled yet.", true);
-        return;
-      }
-      if (historyInfo.complete) {
-        setStatus("history-status", `History is complete through ${historyInfo.targetDate}.`);
-        await loadHistory();
-        return;
-      }
-
-      button.textContent = "Fetching one batch…";
-      const progress = await requestJson("/api/chart-history/backfill", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chart_type: chartType,
-          country,
-          target_date: historyInfo.targetDate,
-          entity_uris: entityUris,
-        }),
-      });
-      await loadHistory();
-      const progressText = `${Number(progress.processedDates || 0).toLocaleString()} of ${Number(progress.totalDates || 0).toLocaleString()} chart dates processed.`;
-      if (progress.complete) {
-        button.textContent = "History complete";
-        setStatus("history-status", `History is complete through ${progress.targetDate}. ${progressText}`);
-      } else if (progress.status === "paused" || progress.status === "unavailable") {
-        button.textContent = "Retry history backfill";
-        setStatus("history-status", `${progress.error || "Backfill paused."} ${progressText}`, true);
-      } else {
-        button.textContent = "Continue backfill";
-        setStatus("history-status", `${progressText} Continue to fetch the next batch.`);
-      }
-    } catch (error) {
-      button.textContent = "Retry history backfill";
-      setStatus("history-status", error.message, true);
-    } finally {
-      button.disabled = false;
+      setStatus("selected-history-status", error.message, true);
     }
   }
 
   function activatePage(page) {
     const validPage = ["charts", "live", "history"].includes(page) ? page : "charts";
+    activePage = validPage;
     document.querySelectorAll("[data-page-panel]").forEach((panel) => {
       panel.hidden = panel.dataset.pagePanel !== validPage;
     });
@@ -373,64 +444,59 @@
       if (active) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     });
-    if (validPage === "live") {
-      loadSelections().then((items) => {
-        if (items.length) return loadLiveData();
-        renderLiveGroup("track", []);
-        renderLiveGroup("artist", []);
-      }).catch((error) => {
-        renderLiveGroup("track", []);
-        renderLiveGroup("artist", []);
-        setStatus("live-status", error.message, true);
-      });
-    }
-    if (validPage === "history") {
-      loadSelections().then(loadHistory).catch((error) => setStatus("history-status", error.message, true));
-    }
+    if (validPage === "live") loadFocusedLive();
+    if (validPage === "history") loadFocusedHistory();
   }
 
-  window.addEventListener("hashchange", () => activatePage(location.hash.slice(1)));
-  byId("manage-selections").addEventListener("click", async () => {
-    byId("selection-dialog").showModal();
-    await loadSelections().catch(() => {});
+  document.querySelectorAll("[data-focus-key]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.focusKey;
+      const value = button.dataset.focusValue;
+      if (state[key] === value) return;
+      state[key] = value;
+      updateFocusControls();
+      if (key === "view") {
+        if (activePage === "live" && liveOverview) renderLive(liveOverview);
+        if (activePage === "history" && historyOverview) renderHistory(historyOverview);
+      } else if (activePage === "live") {
+        state.marketScope = "global";
+        updateLiveActionLabel();
+        loadFocusedLive();
+      } else if (activePage === "history") {
+        loadFocusedHistory();
+      }
+    });
   });
-  byId("selection-close").addEventListener("click", () => byId("selection-dialog").close());
-  byId("selection-search-form").addEventListener("submit", searchSpotify);
-  byId("selection-results").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-add-uri]");
-    if (button) addSelection(button.dataset.addUri);
+
+  byId("live-refresh").addEventListener("click", () => {
+    state.marketScope = "all";
+    loadFocusedLive(true);
   });
-  byId("selection-list").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-remove-uri]");
-    if (button) removeSelection(button.dataset.removeUri);
+  byId("history-refresh").addEventListener("click", () => loadFocusedHistory(true));
+  byId("history-range").addEventListener("change", () => loadFocusedHistory());
+  byId("history-metric").addEventListener("change", () => {
+    if (historyTrendData) renderHistoryTrend(historyTrendData);
   });
-  byId("live-controls").addEventListener("submit", (event) => {
-    event.preventDefault();
-    loadLiveData();
+  byId("history-results").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-history-uri]");
+    if (button) viewHistoryTrend(button.dataset.historyUri);
   });
   byId("live-connect").addEventListener("click", () => {
     window.open("/auth/login", "_blank", "noopener,noreferrer");
-    setStatus("live-status", "Spotify sign-in opened in a new tab. Complete authorization there, then refresh live data.");
+    setStatus("live-status", "Spotify sign-in opened in a new tab. Return here after authorization; charts will refresh automatically.");
   });
-  byId("history-controls").addEventListener("submit", (event) => {
-    event.preventDefault();
-    loadHistory();
-  });
-  byId("history-type").addEventListener("change", () => {
-    populateHistoryEntities();
-    loadHistory();
-  });
-  byId("history-metric").addEventListener("change", loadHistory);
-  byId("history-range").addEventListener("change", loadHistory);
-  byId("history-country").addEventListener("change", loadHistory);
-  byId("history-entity").addEventListener("change", loadHistory);
-  byId("history-refresh").addEventListener("click", loadHistory);
   byId("history-connect").addEventListener("click", () => {
     window.open("/auth/login", "_blank", "noopener,noreferrer");
-    setStatus("history-status", "Spotify sign-in opened in a new tab. Complete authorization there, then refresh history.");
+    setStatus("selected-history-status", "Spotify sign-in opened in a new tab. Return here after authorization; charts will refresh automatically.");
   });
-  byId("history-backfill").addEventListener("click", backfillHistory);
-  populateHistoryEntities();
 
+  authChannel?.addEventListener("message", (event) => {
+    if (event.data === "connected") {
+      if (activePage === "live") loadFocusedLive(true);
+      if (activePage === "history") loadFocusedHistory(true);
+    }
+  });
+  window.addEventListener("hashchange", () => activatePage(location.hash.slice(1)));
+  updateFocusControls();
   activatePage(location.hash.slice(1) || "charts");
 })();

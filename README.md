@@ -15,7 +15,7 @@ A Python client and browser dashboard for exploring Spotify Charts by country, c
 4. Start the browser app with `.venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8000` and open it in a browser.
 5. Connect Spotify, then choose a market and chart to load the live rankings.
 
-Keep client secrets in environment variables or an untracked `.env` file. Do not commit credentials. The dashboard keeps the refresh token in server memory and clears it when the process restarts.
+Keep client secrets in environment variables or an untracked `.env` file. Do not commit credentials. The dashboard stores the Spotify refresh token in the connected Neon database and refreshes short-lived access tokens automatically, so normal app restarts do not require reconnecting. The database must be available for the dashboard to restore and refresh authorization; reconnect only if Spotify authorization is revoked or the stored token becomes invalid.
 
 ## Python client
 

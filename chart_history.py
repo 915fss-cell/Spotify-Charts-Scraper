@@ -13,7 +13,14 @@ from fastapi import HTTPException
 from spotify_charts import SpotifyCharts
 
 
-CHART_STEPS = {"daily_top_songs": 1, "weekly_top_songs": 7, "daily_top_artists": 1, "weekly_top_artists": 7}
+CHART_STEPS = {
+    "daily_top_songs": 1,
+    "weekly_top_songs": 7,
+    "daily_top_artists": 1,
+    "weekly_top_artists": 7,
+    "daily_top_albums": 1,
+    "weekly_top_albums": 7,
+}
 BACKFILL_BATCH_SIZE = 6
 BACKFILL_CONCURRENCY = 3
 LEASE_DURATION = timedelta(minutes=3)
@@ -83,23 +90,27 @@ def chart_date_from_payload(payload: dict[str, Any], requested_date: str) -> dat
 def entry_entity_uri(entry: dict[str, Any]) -> str | None:
     track_metadata = entry.get("trackMetadata") or {}
     artist_metadata = entry.get("artistMetadata") or {}
+    album_metadata = entry.get("albumMetadata") or {}
     uri = (
         track_metadata.get("trackUri")
         or artist_metadata.get("artistUri")
+        or album_metadata.get("albumUri")
         or entry.get("trackUri")
         or entry.get("artistUri")
+        or entry.get("albumUri")
     )
-    if isinstance(uri, str) and uri.startswith(("spotify:track:", "spotify:artist:")):
+    if isinstance(uri, str) and uri.startswith(("spotify:track:", "spotify:artist:", "spotify:album:")):
         return uri
     return None
 
 
-def _snapshot_values(entry: dict[str, Any]) -> tuple[str, str, str, int | None, int | None] | None:
+def snapshot_values(entry: dict[str, Any]) -> tuple[str, str, str, int | None, int | None] | None:
     uri = entry_entity_uri(entry)
     if uri is None:
         return None
-    entity_type = "artist" if uri.startswith("spotify:artist:") else "track"
-    metadata = entry.get("artistMetadata" if entity_type == "artist" else "trackMetadata") or {}
+    entity_type = uri.split(":")[1]
+    metadata_key = {"track": "trackMetadata", "artist": "artistMetadata", "album": "albumMetadata"}[entity_type]
+    metadata = entry.get(metadata_key) or {}
     stats = entry.get("chartEntryData") or {}
     metric = stats.get("rankingMetric") or {}
     streams: int | None = None
@@ -129,7 +140,7 @@ def _snapshot_values(entry: dict[str, Any]) -> tuple[str, str, str, int | None, 
         if isinstance(name, str) and name.strip():
             artist_names.append(name.strip())
 
-    entity_name = metadata.get("trackName" if entity_type == "track" else "artistName")
+    entity_name = metadata.get({"track": "trackName", "artist": "artistName", "album": "albumName"}[entity_type])
     if not isinstance(entity_name, str) or not entity_name.strip():
         entity_name = "Untitled"
     return entity_type, entity_name.strip(), ", ".join(artist_names), streams, rank
@@ -157,13 +168,13 @@ async def save_chart_snapshot(
     country: str,
     chart_date: date,
     entries: list[dict[str, Any]],
-    allowed_entity_uris: set[str],
+    allowed_entity_uris: set[str] | None = None,
 ) -> int:
     deduplicated: dict[str, tuple[Any, ...]] = {}
     for entry in entries:
         uri = entry_entity_uri(entry)
-        values = _snapshot_values(entry)
-        if uri and values and uri in allowed_entity_uris:
+        values = snapshot_values(entry)
+        if uri and values and (allowed_entity_uris is None or uri in allowed_entity_uris):
             entity_type, entity_name, artist_names, streams, rank = values
             deduplicated[uri] = (
                 chart_type, country, chart_date, uri, entity_name, artist_names, streams, entity_type, rank
@@ -363,28 +374,30 @@ async def prepare_chart_history(
     country: str,
     requested_date: str,
     payload: dict[str, Any],
-    allowed_entity_uris: set[str],
+    allowed_entity_uris: set[str] | None = None,
 ) -> dict[str, Any]:
     if chart_type not in CHART_STEPS:
         return {
             "supported": False,
             "complete": False,
             "status": "unsupported",
-            "reason": "Historical snapshots are available for selected Top Songs and Top Artists only.",
+            "reason": "Historical snapshots are available for daily and weekly Top Songs, Top Artists, and Top Albums charts.",
         }
 
     entries = [
-        entry for entry in payload.get("entries") or [] if entry_entity_uri(entry) in allowed_entity_uris
+        entry
+        for entry in payload.get("entries") or []
+        if allowed_entity_uris is None or entry_entity_uri(entry) in allowed_entity_uris
     ]
     if not entries:
         return {
             "supported": False,
             "complete": False,
-            "status": "unconfigured",
-            "reason": "No selected entities are available in this chart selection.",
+            "status": "unavailable",
+            "reason": "No chart entries are available to save.",
         }
     target_date = chart_date_from_payload(payload, requested_date)
-    start_date = first_entry_date(entries)
+    start_date = target_date if allowed_entity_uris is None else first_entry_date(entries)
     if target_date is None:
         return {
             "supported": False,
@@ -412,7 +425,11 @@ async def prepare_chart_history(
                 "status": "unavailable",
                 "reason": "Spotify did not provide a rank or stream count for this chart.",
             }
-        selection_fingerprint = hashlib.sha256("\n".join(sorted(allowed_entity_uris)).encode("utf-8")).hexdigest()
+        selection_fingerprint = (
+            "all-chart-entries"
+            if allowed_entity_uris is None
+            else hashlib.sha256("\n".join(sorted(allowed_entity_uris)).encode("utf-8")).hexdigest()
+        )
         await ensure_backfill_job(
             pool,
             chart_type,
@@ -455,16 +472,23 @@ async def run_history_backfill_batch(
     chart_type: str,
     country: str,
     target_date: date,
-    entity_uris: list[str],
+    start_date: date,
+    total_entity_uris: list[str] | None,
     scraper_factory: Callable[[], Awaitable[SpotifyCharts]],
 ) -> dict[str, Any]:
     if chart_type not in CHART_STEPS:
         raise HTTPException(status_code=400, detail="Choose a supported songs or artists chart to backfill history.")
-    if not entity_uris:
-        raise HTTPException(status_code=409, detail="No selected entities are configured for history tracking yet.")
 
     pool = await get_history_pool()
     step = CHART_STEPS[chart_type]
+    if start_date > target_date:
+        start_date = target_date
+    if step == 7 and start_date < target_date:
+        start_date += timedelta(days=(target_date.weekday() - start_date.weekday()) % step)
+        if start_date > target_date:
+            start_date = target_date
+
+    await ensure_backfill_job(pool, chart_type, country, start_date, target_date, "all-chart-entries")
     job = await pool.fetchrow(
         """
         SELECT start_date, target_date, next_date, processed_dates, total_dates, status
@@ -474,8 +498,6 @@ async def run_history_backfill_batch(
         chart_type,
         country,
     )
-    if job is None:
-        raise HTTPException(status_code=409, detail="Load a selected-entity chart before starting its history backfill.")
     if target_date > job["target_date"]:
         raise HTTPException(status_code=400, detail="The selected date is newer than the saved chart history target.")
 
@@ -496,7 +518,7 @@ async def run_history_backfill_batch(
 
     if claim is None:
         progress = await get_backfill_progress(pool, chart_type, country, target_date)
-        totals = await get_stream_totals(pool, chart_type, country, target_date, entity_uris) if progress["complete"] else {}
+        totals = await get_stream_totals(pool, chart_type, country, target_date, total_entity_uris) if progress["complete"] and total_entity_uris else {}
         return {**progress, "totals": totals}
 
     try:
@@ -532,15 +554,7 @@ async def run_history_backfill_batch(
         if not isinstance(historical_entries, list):
             await _pause_job(pool, chart_type, country, "Spotify returned an unsupported historical chart response.")
             break
-        tracked_entries = [entry for entry in historical_entries if entry_entity_uri(entry) in entity_uris]
-        if tracked_entries and await save_chart_snapshot(
-            pool,
-            chart_type,
-            country,
-            chart_day,
-            tracked_entries,
-            allowed_entity_uris=set(entity_uris),
-        ) == 0:
+        if await save_chart_snapshot(pool, chart_type, country, chart_day, historical_entries) == 0:
             await _pause_job(pool, chart_type, country, "Spotify did not include a rank or stream count in a historical chart response.")
             break
 
@@ -569,5 +583,5 @@ async def run_history_backfill_batch(
     )
 
     progress = await get_backfill_progress(pool, chart_type, country, target_date)
-    totals = await get_stream_totals(pool, chart_type, country, target_date, entity_uris) if progress["complete"] else {}
+    totals = await get_stream_totals(pool, chart_type, country, target_date, total_entity_uris) if progress["complete"] and total_entity_uris else {}
     return {**progress, "totals": totals}
