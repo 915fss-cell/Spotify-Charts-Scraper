@@ -62,7 +62,9 @@
         ? `${escapeHtml(formattedMetric)} ${escapeHtml(item.metricType || "")}`
         : "No metric returned";
       const rank = item.inChart && item.chartRank != null ? `#${escapeHtml(item.chartRank)}` : "—";
-      return `<article class="entity-row">${artwork(item.imageUrl, item.entityName)}<div class="entity-copy">${link}<div class="entity-subtitle">${escapeHtml(subtitle)}</div></div><div class="entity-metrics"><div class="entity-rank">${rank}</div><div class="entity-streams">${item.inChart ? metric : "Outside current chart"}</div></div></article>`;
+      const kind = type === "track" ? "songs" : "artists";
+      const removeButton = `<button class="selection-action remove entity-remove" type="button" data-live-remove-uri="${escapeHtml(item.entityUri)}" aria-label="Remove ${title} from selected ${kind}">Remove</button>`;
+      return `<article class="entity-row">${artwork(item.imageUrl, item.entityName)}<div class="entity-copy">${link}<div class="entity-subtitle">${escapeHtml(subtitle)}</div></div><div class="entity-metrics"><div class="entity-rank">${rank}</div><div class="entity-streams">${item.inChart ? metric : "Outside current chart"}</div>${removeButton}</div></article>`;
     }).join("");
   }
 
@@ -229,13 +231,20 @@
       await requestJson(`/api/selections/${encodeURIComponent(uri)}`, { method: "DELETE" });
       selections = selections.filter((selection) => selection.entityUri !== uri);
       renderSelections();
-      setStatus("selection-status", `${entityName(item || {})} removed from your selection. Existing snapshots are retained.`);
+      const message = `${entityName(item || {})} removed from your selection. Existing snapshots are retained.`;
+      setStatus("selection-status", message);
       if (location.hash === "#live") {
+        liveRequest += 1;
+        const refreshButton = byId("live-refresh");
+        refreshButton.disabled = false;
+        refreshButton.textContent = "Refresh live data";
         renderLiveGroup("track", selections.filter((selection) => selection.entityType === "track").map((selection) => ({ ...selection, inChart: false })));
         renderLiveGroup("artist", selections.filter((selection) => selection.entityType === "artist").map((selection) => ({ ...selection, inChart: false })));
+        setStatus("live-status", message);
       }
     } catch (error) {
       setStatus("selection-status", error.message, true);
+      if (location.hash === "#live") setStatus("live-status", error.message, true);
     }
   }
 
@@ -433,6 +442,12 @@
     const button = event.target.closest("[data-remove-uri]");
     if (button) removeSelection(button.dataset.removeUri);
   });
+  const removeLiveSelection = (event) => {
+    const button = event.target.closest("[data-live-remove-uri]");
+    if (button) removeSelection(button.dataset.liveRemoveUri);
+  };
+  byId("live-songs").addEventListener("click", removeLiveSelection);
+  byId("live-artists").addEventListener("click", removeLiveSelection);
   byId("live-controls").addEventListener("submit", (event) => {
     event.preventDefault();
     loadLiveData();
