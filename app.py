@@ -318,7 +318,12 @@ async def selected_live(
         except httpx.HTTPStatusError as error:
             if error.response.status_code == 429:
                 raise HTTPException(status_code=429, detail="Spotify rate-limited this chart. Try again shortly.") from error
-            raise HTTPException(status_code=502, detail="Spotify could not return this chart. Try again shortly.") from error
+            if error.response.status_code in {401, 403}:
+                raise HTTPException(status_code=502, detail="Spotify rejected chart access. Reconnect Spotify and try again.") from error
+            raise HTTPException(
+                status_code=502,
+                detail=f"Spotify could not return this chart (HTTP {error.response.status_code}). Try again shortly.",
+            ) from error
         except (httpx.HTTPError, ValueError) as error:
             raise HTTPException(status_code=502, detail="Spotify could not return this chart. Try again shortly.") from error
 
@@ -863,6 +868,15 @@ async def chart(
         result = await getattr(scraper, CHART_METHODS[chart_type])(country.upper(), date)
     except KeyError as error:
         raise HTTPException(status_code=502, detail="Spotify returned an unexpected chart response.") from error
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="Spotify rate-limited this chart. Try again shortly.") from error
+        if error.response.status_code in {401, 403}:
+            raise HTTPException(status_code=502, detail="Spotify rejected chart access. Reconnect Spotify and try again.") from error
+        raise HTTPException(
+            status_code=502,
+            detail=f"Spotify could not return this chart (HTTP {error.response.status_code}). Try again shortly.",
+        ) from error
     except (httpx.HTTPError, ValueError) as error:
         raise HTTPException(status_code=502, detail="Spotify could not return this chart. Try again shortly.") from error
 

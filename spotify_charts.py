@@ -1,3 +1,5 @@
+from copy import deepcopy
+from time import monotonic
 from httpx import AsyncClient, Client
 from urllib.parse import urlparse, parse_qs
 from os import path
@@ -14,6 +16,8 @@ redirect_uri = spotify_settings.redirect_url
 redirect_port = spotify_settings.redirect_port
 
 redirect_url = f"{redirect_uri}:{redirect_port}"
+CHART_CACHE_TTL = 300
+_chart_cache: dict[str, tuple[float, dict]] = {}
 
 
 class AuthRequestHandler(BaseHTTPRequestHandler):
@@ -97,12 +101,22 @@ class SpotifyCharts:
         return Countries
 
     async def _fetch_chart(self, url: str) -> dict:
+        cached = _chart_cache.get(url)
+        if cached and cached[0] > monotonic():
+            return deepcopy(cached[1])
+
         async with AsyncClient(timeout=15) as client:
             response = await client.get(url, headers=self.headers)
             response.raise_for_status()
             payload = response.json()
         if not isinstance(payload, dict):
             raise ValueError("Spotify returned an unexpected chart response.")
+
+        now = monotonic()
+        _chart_cache[url] = (now + CHART_CACHE_TTL, deepcopy(payload))
+        for cached_url, (expires_at, _) in list(_chart_cache.items()):
+            if expires_at <= now:
+                del _chart_cache[cached_url]
         return payload
 
     async def search_entities(self, query: str, entity_type: str = "all", limit: int = 10) -> list[dict]:
