@@ -105,6 +105,60 @@ class SpotifyCharts:
             raise ValueError("Spotify returned an unexpected chart response.")
         return payload
 
+    async def search_entities(self, query: str, entity_type: str = "all", limit: int = 12) -> list[dict]:
+        if entity_type not in {"all", "track", "artist"}:
+            raise ValueError("Choose songs, artists, or both to search.")
+
+        search_types = "track,artist" if entity_type == "all" else entity_type
+        async with AsyncClient(timeout=15) as client:
+            response = await client.get(
+                "https://api.spotify.com/v1/search",
+                params={"q": query, "type": search_types, "limit": limit},
+                headers=self.headers,
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        if not isinstance(payload, dict):
+            raise ValueError("Spotify returned an unexpected search response.")
+
+        results: list[dict] = []
+        if entity_type in {"all", "track"}:
+            tracks = (payload.get("tracks") or {}).get("items") or []
+            for item in tracks:
+                if not isinstance(item, dict) or not isinstance(item.get("uri"), str):
+                    continue
+                artists = item.get("artists") or []
+                artist_names = [artist.get("name", "") for artist in artists if isinstance(artist, dict)]
+                images = ((item.get("album") or {}).get("images") or [])
+                results.append({
+                    "entityType": "track",
+                    "entityUri": item["uri"],
+                    "entityName": item.get("name") or "Untitled",
+                    "artistNames": ", ".join(name for name in artist_names if name),
+                    "imageUrl": images[0].get("url") if images and isinstance(images[0], dict) else None,
+                    "spotifyUrl": (item.get("external_urls") or {}).get("spotify"),
+                    "popularity": int(item.get("popularity") or 0),
+                })
+
+        if entity_type in {"all", "artist"}:
+            artists = (payload.get("artists") or {}).get("items") or []
+            for item in artists:
+                if not isinstance(item, dict) or not isinstance(item.get("uri"), str):
+                    continue
+                images = item.get("images") or []
+                results.append({
+                    "entityType": "artist",
+                    "entityUri": item["uri"],
+                    "entityName": item.get("name") or "Untitled",
+                    "artistNames": "",
+                    "imageUrl": images[0].get("url") if images and isinstance(images[0], dict) else None,
+                    "spotifyUrl": (item.get("external_urls") or {}).get("spotify"),
+                    "popularity": int(item.get("popularity") or 0),
+                })
+
+        return sorted(results, key=lambda item: item["popularity"], reverse=True)[:limit]
+
     async def daily_top_songs(self, country_code: str, date_: str = "latest") -> dict:
         """
         :param country_code: Country code of the country eg. IN -> India

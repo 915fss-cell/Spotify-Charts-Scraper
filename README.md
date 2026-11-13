@@ -38,6 +38,10 @@ The local client uses the legacy `CLIENT_ID`, `CLIENT_SECRET`, `REDIRECT_URL`, a
 - Weekly top artists
 - Weekly top albums
 
+## Historical chart streams
+
+Cumulative chart streams are opt-in. By default, no songs are configured and the dashboard does not save chart snapshots. After specific Spotify track URIs are added to `TRACK_HISTORY_TRACK_URIS` in `app.py`, the app stores deduplicated snapshots and resumable backfill progress in Neon through `DATABASE_URL` for those songs only. It sums `STREAMS` values only on dates each song appeared in the selected market and chart; these are chart-period streams, not lifetime Spotify plays. The Neon schema must include `spotify_chart_snapshots` and `spotify_chart_backfills`.
+
 The chart service URLs used by this project are not part of Spotify's public Web API contract and may change. The notebook in `Testing.ipynb` contains an older example response; it is not live data.
 
 Copyright © [Henry Richard J](https://github.com/henry-richard7)
