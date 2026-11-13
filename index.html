@@ -68,9 +68,9 @@
         <p class="footnote" id="date-help">Use “latest” or a chart date in YYYY-MM-DD format. Rankings are returned by Spotify Charts; historical availability varies by chart.</p>
       </main>
       <main class="main page-panel focused-page" id="live" data-page-panel="live" hidden>
-        <div class="topline"><span class="eyebrow">Artist chart dashboard</span><div class="focus-header-actions"><button class="quiet-button" id="live-refresh" type="button">Refresh charts</button><button class="connect-button" id="live-connect" type="button">Connect Spotify</button></div></div>
+        <div class="topline"><span class="eyebrow">Artist chart dashboard</span><div class="focus-header-actions"><button class="quiet-button" id="live-refresh" type="button">Load all regions</button><button class="connect-button" id="live-connect" type="button">Connect Spotify</button></div></div>
         <section class="intro" aria-labelledby="live-title">
-          <div><h1 id="live-title">Live charts<span style="color:var(--lime)">.</span></h1><p>Every region currently charting a Taylor Swift release, grouped by release or region.</p></div>
+          <div><h1 id="live-title">Live charts<span style="color:var(--lime)">.</span></h1><p>See Taylor Swift&apos;s Global chart placement first, then scan all regions for more appearances.</p></div>
           <a class="focus-artist-badge" href="https://open.spotify.com/artist/06HL4z0CvFAxyc27GXpf02" target="_blank" rel="noreferrer">Taylor Swift <span aria-hidden="true">↗</span></a>
         </section>
         <div class="focus-toolbar" aria-label="Live chart controls">
@@ -111,6 +111,10 @@
       const byId = (id) => document.getElementById(id);
       let appStatus = null;
       let chartLoadSequence = 0;
+      const chartPayloadCache = new Map();
+      function rememberChartPayload(chartType, country, date, payload) {
+        chartPayloadCache.set(`${chartType}:${country.toUpperCase()}:${date}`, payload);
+      }
       const authChannel = "BroadcastChannel" in window ? new BroadcastChannel("spotify-charts-auth") : null;
       const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
       function showBanner(message, isError = false) {
@@ -127,7 +131,15 @@
       async function requestJson(url, options) {
         const response = await fetch(url, options);
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.detail || "The request could not be completed.");
+        if (!response.ok) {
+          const detail = payload.detail;
+          const message = typeof detail === "string"
+            ? detail
+            : Array.isArray(detail)
+              ? detail.map((item) => item.msg).filter(Boolean).join(" ")
+              : "The request could not be completed.";
+          throw new Error(message || "The request could not be completed.");
+        }
         return payload;
       }
       async function loadStatus() {
@@ -135,8 +147,10 @@
           appStatus = await requestJson("/api/status");
           byId("state-dot").classList.toggle("online", appStatus.connected);
           byId("state-label").textContent = appStatus.connected ? "Spotify connected" : "Not connected";
-          byId("connect-button").textContent = appStatus.connected ? "Reconnect Spotify" : "Connect Spotify";
-          byId("load-button").disabled = !appStatus.connected;
+        byId("connect-button").textContent = appStatus.connected ? "Reconnect Spotify" : "Connect Spotify";
+        byId("live-connect").textContent = appStatus.connected ? "Reconnect Spotify" : "Connect Spotify";
+        byId("history-connect").textContent = appStatus.connected ? "Reconnect Spotify" : "Connect Spotify";
+        byId("load-button").disabled = !appStatus.connected;
           if (!appStatus.configured) {
             showBanner(`Set ${appStatus.missing.join(" and ")} in the project environment before connecting. Register this callback URI in your Spotify app: ${appStatus.callbackUrl}`, true);
           } else if (new URLSearchParams(location.search).get("auth") === "error") {
@@ -319,8 +333,9 @@
         try {
           const payload = await requestJson(`/api/charts?${params}`);
           if (requestId !== chartLoadSequence) return;
-          renderChart(payload);
-          void continueChartHistory(payload, requestId);
+        rememberChartPayload(byId("chart-type").value, byId("country").value, byId("chart-date").value.trim() || "latest", payload);
+        renderChart(payload);
+        void continueChartHistory(payload, requestId);
       } catch (error) {
         if (requestId === chartLoadSequence) {
           byId("section-title").textContent = "Chart unavailable";
@@ -347,10 +362,17 @@
 
         }
       });
-      window.Chartroom = { byId, requestJson, escapeHtml, spotifyLink };
+      window.Chartroom = {
+        byId,
+        requestJson,
+        escapeHtml,
+        spotifyLink,
+        rememberChartPayload,
+        getCachedChart: (chartType, country, date) => chartPayloadCache.get(`${chartType}:${country.toUpperCase()}:${date}`) || null,
+      };
       Promise.all([loadCountries(), loadStatus()]).catch((error) => showBanner(error.message, true));
     </script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" defer></script>
-    <script src="/selected-pages.js" defer></script>
+    <script src="/selected-pages.js?v=global-chart-cache-1" defer></script>
   </body>
 </html>

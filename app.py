@@ -52,7 +52,7 @@ HISTORY_CHART_TYPES = {
 FOCUSED_ARTIST_URI = "spotify:artist:06HL4z0CvFAxyc27GXpf02"
 FOCUSED_ARTIST_NAME = "Taylor Swift"
 FOCUSED_CHART_CACHE_TTL = 180
-focused_chart_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+focused_chart_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 focused_chart_cache_lock = asyncio.Lock()
 COUNTRY_NAMES = {country.value: country.name.replace("_", " ").title() for country in Countries}
 
@@ -508,10 +508,11 @@ def focused_chart_item(entry: dict[str, Any], country_code: str, chart_date: str
 async def focused_live(
     cadence: Literal["daily", "weekly"] = Query("daily"),
     entity_type: Literal["track", "artist", "album"] = Query("track"),
+    scope: Literal["global", "all"] = Query("global"),
     refresh: bool = Query(False),
 ) -> dict[str, Any]:
     chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
-    cache_key = (cadence, entity_type)
+    cache_key = (cadence, entity_type, scope)
     async with focused_chart_cache_lock:
         cached = focused_chart_cache.get(cache_key)
         if not refresh and cached and time.monotonic() - cached[0] < FOCUSED_CHART_CACHE_TTL:
@@ -519,7 +520,7 @@ async def focused_live(
 
     scraper = await get_spotify_scraper()
     method = getattr(scraper, CHART_METHODS[chart_type])
-    markets = list(Countries)
+    markets = [Countries.GLOBAL] if scope == "global" else list(Countries)
     semaphore = asyncio.Semaphore(2)
     history_saved_regions = 0
     history_storage_available = True
@@ -586,7 +587,8 @@ async def focused_live(
             })
 
     if not regions and failed_regions:
-        raise HTTPException(status_code=502, detail="Spotify could not load any regional charts. Try again shortly.")
+        message = "Spotify could not load the Global chart. Try again shortly." if scope == "global" else "Spotify could not load any regional charts. Try again shortly."
+        raise HTTPException(status_code=502, detail=message)
 
     regions.sort(key=lambda region: (region["regionCode"] != "GLOBAL", region["regionName"]))
     release_items = list(releases.values())
@@ -596,6 +598,8 @@ async def focused_live(
         "cadence": cadence,
         "entityType": entity_type,
         "chartType": chart_type,
+        "marketScope": scope,
+        "marketsTotal": len(markets),
         "marketsScanned": len(markets) - len(failed_regions),
         "matchingRegions": len(regions),
         "failedRegions": failed_regions,

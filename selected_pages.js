@@ -2,8 +2,8 @@
   const app = window.Chartroom;
   if (!app) return;
 
-  const { byId, requestJson, escapeHtml, spotifyLink } = app;
-  const state = { cadence: "daily", entityType: "track", view: "release" };
+  const { byId, requestJson, escapeHtml, spotifyLink, getCachedChart } = app;
+  const state = { cadence: "daily", entityType: "track", view: "release", marketScope: "global" };
   let activePage = "charts";
   let liveOverview = null;
   let liveKey = "";
@@ -22,7 +22,11 @@
   }
 
   function currentKey() {
-    return `${state.cadence}:${state.entityType}`;
+    return `${state.cadence}:${state.entityType}:${state.marketScope}`;
+  }
+
+  function updateLiveActionLabel() {
+    byId("live-refresh").textContent = state.marketScope === "global" ? "Load all regions" : "Refresh all regions";
   }
 
   function chartTypeName() {
@@ -130,26 +134,120 @@
 
   function renderLive(payload) {
     byId("live-results-title").textContent = state.view === "release"
-      ? `Taylor Swift ${state.entityType === "track" ? "songs" : state.entityType === "artist" ? "artist chart" : "albums"} charting now`
+      ? state.entityType === "artist"
+        ? "Taylor Swift in the artist chart"
+        : `Taylor Swift ${state.entityType === "track" ? "songs" : "albums"} charting now`
       : `${chartTypeName()} by region`;
     const count = state.view === "release" ? payload.releases.length : payload.regions.length;
+    const matchingRegionLabel = payload.matchingRegions === 1 ? "region" : "regions";
     byId("live-results-count").textContent = state.view === "release"
-      ? `${count} releases · ${payload.matchingRegions} regions`
+      ? `${count} ${count === 1 ? "result" : "results"} · ${payload.matchingRegions} ${matchingRegionLabel}`
       : `${count} regions · ${payload.marketsScanned} markets scanned`;
     renderResultCards("live-results", payload.releases, payload.regions);
     const failures = payload.failedRegions?.length || 0;
-    const message = `${payload.artist.entityName}: ${payload.matchingRegions} of ${payload.marketsScanned} regions charting ${entityTypeName()}s in the ${state.cadence} charts.`;
-    const storageMessage = payload.historyStorageAvailable
-      ? `${payload.historySavedRegions} regional snapshots saved for History.`
-      : "Live charts loaded; history storage is unavailable right now.";
+    const marketMessage = payload.marketScope === "global"
+      ? "Global chart loaded. Scan all regions to find more placements."
+      : `${payload.marketsScanned} of ${payload.marketsTotal} markets scanned.`;
+    const regionLabel = payload.matchingRegions === 1 ? "region" : "regions";
+    const message = `${payload.artist.entityName}: ${payload.matchingRegions} ${regionLabel} charting ${entityTypeName()}s in the ${state.cadence} charts. ${marketMessage}`;
+    const storageMessage = payload.historyStorageAvailable == null
+      ? ""
+      : payload.historyStorageAvailable
+        ? `${payload.historySavedRegions} regional snapshots saved for History.`
+        : "Live charts loaded; history storage is unavailable right now.";
     const partialMessage = failures ? ` ${failures} regions could not be loaded.` : "";
-    setStatus("live-status", `${message} ${storageMessage}${partialMessage}`, failures > 0 && payload.marketsScanned === 0);
+    setStatus("live-status", `${message}${storageMessage ? ` ${storageMessage}` : ""}${partialMessage}`, failures > 0 && payload.marketsScanned === 0);
+    updateLiveActionLabel();
+  }
+
+  function buildGlobalOverview(chart) {
+    const artistUri = "spotify:artist:06HL4z0CvFAxyc27GXpf02";
+    const chartDate = String(chart.displayChart?.date || "Latest");
+    const metadataKey = { track: "trackMetadata", artist: "artistMetadata", album: "albumMetadata" }[state.entityType];
+    const entries = (chart.entries || []).filter((entry) => {
+      const metadata = entry[metadataKey] || {};
+      if (state.entityType === "artist") {
+        const uri = metadata.artistUri || entry.artistUri;
+        const name = metadata.artistName || "";
+        return uri === artistUri || name.toLowerCase() === "taylor swift";
+      }
+      return (metadata.artists || []).some((artist) => artist && (
+        artist.spotifyUri === artistUri || artist.uri === artistUri || String(artist.name || "").toLowerCase() === "taylor swift"
+      ));
+    }).map((entry) => {
+      const metadata = entry[metadataKey] || {};
+      const stats = entry.chartEntryData || {};
+      const metric = stats.rankingMetric || {};
+      const uri = metadata.trackUri || metadata.artistUri || metadata.albumUri || entry.trackUri || entry.artistUri || entry.albumUri;
+      if (!uri) return null;
+      return {
+        entityUri: uri,
+        entityType: state.entityType,
+        entityName: metadata.trackName || metadata.artistName || metadata.albumName || "Untitled",
+        artistNames: state.entityType === "artist" ? (metadata.artistName || "Taylor Swift") : (metadata.artists || []).map((artist) => artist?.name).filter(Boolean).join(", "),
+        imageUrl: metadata.displayImageUri || null,
+        regionCode: "GLOBAL",
+        regionName: "Global",
+        chartRank: stats.currentRank,
+        previousRank: stats.previousRank,
+        peakRank: stats.peakRank,
+        consecutiveAppearancesOnChart: stats.consecutiveAppearancesOnChart,
+        appearancesOnChart: stats.appearancesOnChart,
+        entryDate: stats.entryDate,
+        metricType: metric.type,
+        metricValue: metric.value ?? null,
+        chartDate,
+      };
+    }).filter(Boolean);
+    const regions = entries.length ? [{ regionCode: "GLOBAL", regionName: "Global", chartDate, entries }] : [];
+    const releases = entries.map((entry) => ({
+      entityUri: entry.entityUri,
+      entityType: entry.entityType,
+      entityName: entry.entityName,
+      artistNames: entry.artistNames,
+      imageUrl: entry.imageUrl,
+      regions: [{
+        regionCode: entry.regionCode,
+        regionName: entry.regionName,
+        chartDate: entry.chartDate,
+        chartRank: entry.chartRank,
+        previousRank: entry.previousRank,
+        peakRank: entry.peakRank,
+        consecutiveAppearancesOnChart: entry.consecutiveAppearancesOnChart,
+        appearancesOnChart: entry.appearancesOnChart,
+        entryDate: entry.entryDate,
+        metricType: entry.metricType,
+        metricValue: entry.metricValue,
+      }],
+    }));
+    return {
+      artist: { entityUri: artistUri, entityName: "Taylor Swift" },
+      cadence: state.cadence,
+      entityType: state.entityType,
+      chartType: `${state.cadence}_top_${{ track: "songs", artist: "artists", album: "albums" }[state.entityType]}`,
+      marketScope: "global",
+      marketsTotal: 1,
+      marketsScanned: 1,
+      matchingRegions: regions.length,
+      failedRegions: [],
+      releases,
+      regions,
+    };
   }
 
   async function fetchLiveOverview(refresh = false) {
-    const params = new URLSearchParams({ cadence: state.cadence, entity_type: state.entityType });
-    if (refresh) params.set("refresh", "true");
-    const payload = await requestJson(`/api/focused/live?${params}`);
+    let payload;
+    if (state.marketScope === "global") {
+      const chartType = `${state.cadence}_top_${{ track: "songs", artist: "artists", album: "albums" }[state.entityType]}`;
+      const cachedChart = getCachedChart(chartType, "GLOBAL", "latest");
+      const params = new URLSearchParams({ type: chartType, country: "GLOBAL", date: "latest" });
+      const chart = cachedChart || await requestJson(`/api/charts?${params}`);
+      payload = buildGlobalOverview(chart);
+    } else {
+      const params = new URLSearchParams({ cadence: state.cadence, entity_type: state.entityType, scope: "all" });
+      if (refresh) params.set("refresh", "true");
+      payload = await requestJson(`/api/focused/live?${params}`);
+    }
     liveOverview = payload;
     liveKey = currentKey();
     liveLoadedAt = Date.now();
@@ -159,22 +257,30 @@
   async function loadFocusedLive(refresh = false) {
     const requestId = ++liveRequest;
     byId("live-refresh").disabled = true;
-    byId("live-refresh").textContent = "Loading regions…";
-    byId("live-results-count").textContent = "Scanning all Spotify regions…";
-    setStatus("live-status", `Loading Taylor Swift ${entityTypeName()} charts across all regions…`);
+    byId("live-refresh").textContent = state.marketScope === "global" ? "Loading Global…" : "Loading regions…";
+    byId("live-results-count").textContent = state.marketScope === "global" ? "Loading Global chart…" : "Scanning all Spotify regions…";
+    setStatus("live-status", state.marketScope === "global"
+      ? `Loading Taylor Swift ${entityTypeName()} chart for Global…`
+      : `Loading Taylor Swift ${entityTypeName()} charts across all regions…`);
     try {
       const payload = await fetchLiveOverview(refresh);
       if (requestId === liveRequest && activePage === "live") renderLive(payload);
     } catch (error) {
       if (requestId === liveRequest) {
-        byId("live-results-count").textContent = "Charts unavailable";
-        byId("live-results").innerHTML = `<p class="focus-empty">${escapeHtml(error.message)}</p>`;
-        setStatus("live-status", error.message, true);
+        if (state.marketScope === "all" && liveOverview?.marketScope === "global") {
+          state.marketScope = "global";
+          renderLive(liveOverview);
+          setStatus("live-status", `The full regional scan failed: ${error.message} The Global chart is still shown.`, true);
+        } else {
+          byId("live-results-count").textContent = "Charts unavailable";
+          byId("live-results").innerHTML = `<p class="focus-empty">${escapeHtml(error.message)}</p>`;
+          setStatus("live-status", error.message, true);
+        }
       }
     } finally {
       if (requestId === liveRequest) {
         byId("live-refresh").disabled = false;
-        byId("live-refresh").textContent = "Refresh charts";
+        updateLiveActionLabel();
       }
     }
   }
@@ -340,6 +446,8 @@
         if (activePage === "live" && liveOverview) renderLive(liveOverview);
         if (activePage === "history" && historyOverview) renderHistory(historyOverview);
       } else if (activePage === "live") {
+        state.marketScope = "global";
+        updateLiveActionLabel();
         loadFocusedLive();
       } else if (activePage === "history") {
         loadFocusedHistory();
@@ -347,7 +455,10 @@
     });
   });
 
-  byId("live-refresh").addEventListener("click", () => loadFocusedLive(true));
+  byId("live-refresh").addEventListener("click", () => {
+    state.marketScope = "all";
+    loadFocusedLive(true);
+  });
   byId("history-refresh").addEventListener("click", () => loadFocusedHistory(true));
   byId("history-range").addEventListener("change", () => loadFocusedHistory());
   byId("history-metric").addEventListener("change", () => {
