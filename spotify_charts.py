@@ -18,7 +18,20 @@ redirect_port = spotify_settings.redirect_port
 
 redirect_url = f"{redirect_uri}:{redirect_port}"
 CHART_CACHE_TTL = 300
+CHART_REQUEST_INTERVAL = 1.5
 _chart_cache: dict[str, tuple[float, dict]] = {}
+_chart_request_lock = asyncio.Lock()
+_next_chart_request_at = 0.0
+
+
+async def _wait_for_chart_request_slot() -> None:
+    global _next_chart_request_at
+    async with _chart_request_lock:
+        now = monotonic()
+        delay = max(0.0, _next_chart_request_at - now)
+        _next_chart_request_at = max(now, _next_chart_request_at) + CHART_REQUEST_INTERVAL
+    if delay:
+        await asyncio.sleep(delay)
 
 
 class AuthRequestHandler(BaseHTTPRequestHandler):
@@ -108,6 +121,7 @@ class SpotifyCharts:
 
         async with AsyncClient(timeout=15) as client:
             for attempt in range(3):
+                await _wait_for_chart_request_slot()
                 response = await client.get(url, headers=self.headers)
                 if response.status_code not in {429, 500, 502, 503, 504}:
                     response.raise_for_status()
