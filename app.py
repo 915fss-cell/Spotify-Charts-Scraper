@@ -46,7 +46,15 @@ HISTORY_CHART_TYPES = {
     "weekly_top_songs": "track",
     "daily_top_artists": "artist",
     "weekly_top_artists": "artist",
+    "daily_top_albums": "album",
+    "weekly_top_albums": "album",
 }
+FOCUSED_ARTIST_URI = "spotify:artist:06HL4z0CvFAxyc27GXpf02"
+FOCUSED_ARTIST_NAME = "Taylor Swift"
+FOCUSED_CHART_CACHE_TTL = 180
+focused_chart_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+focused_chart_cache_lock = asyncio.Lock()
+COUNTRY_NAMES = {country.value: country.name.replace("_", " ").title() for country in Countries}
 
 
 class ChartHistoryBackfillRequest(BaseModel):
@@ -69,6 +77,7 @@ CHART_METHODS = {
     "daily_top_songs": "daily_top_songs",
     "daily_top_artists": "daily_top_artists",
     "daily_viral_songs": "daily_viral_songs",
+    "daily_top_albums": "daily_top_albums",
     "weekly_top_songs": "weekly_top_songs",
     "weekly_top_artists": "weekly_top_artists",
     "weekly_top_albums": "weekly_top_albums",
@@ -195,7 +204,7 @@ def is_valid_entity_uri(uri: str, entity_type: str | None = None) -> bool:
     return (
         len(parts) == 3
         and parts[0] == "spotify"
-        and parts[1] in {"track", "artist"}
+        and parts[1] in {"track", "artist", "album"}
         and (entity_type is None or parts[1] == entity_type)
         and bool(parts[2])
         and all(character.isascii() and character.isalnum() for character in parts[2])
@@ -288,43 +297,6 @@ async def search_entities(
         raise HTTPException(status_code=502, detail="Spotify could not complete this search. Try again shortly.") from error
     except (httpx.HTTPError, ValueError) as error:
         raise HTTPException(status_code=502, detail="Spotify could not complete this search. Try again shortly.") from error
-
-
-@app.get("/api/artist/resolve")
-async def resolve_artist_link(
-    artist_link: str = Query(..., min_length=22, max_length=2048),
-) -> dict[str, Any]:
-    require_spotify_connection()
-    value = artist_link.strip()
-    if value.startswith("spotify:artist:"):
-        artist_id = value.removeprefix("spotify:artist:")
-    else:
-        parsed = urlsplit(value)
-        path_parts = parsed.path.strip("/").split("/")
-        if (
-            parsed.scheme != "https"
-            or parsed.hostname != "open.spotify.com"
-            or len(path_parts) != 2
-            or path_parts[0] != "artist"
-        ):
-            raise HTTPException(status_code=400, detail="Paste a Spotify artist profile link or artist URI.")
-        artist_id = path_parts[1]
-
-    if len(artist_id) != 22 or not artist_id.isascii() or not artist_id.isalnum():
-        raise HTTPException(status_code=400, detail="That Spotify artist link does not contain a valid artist ID.")
-
-    scraper = await get_spotify_scraper()
-    try:
-        artist = await scraper.get_artist_profile(artist_id)
-        return {"artist": artist}
-    except httpx.HTTPStatusError as error:
-        if error.response.status_code == 404:
-            raise HTTPException(status_code=404, detail="Spotify could not find that artist.") from error
-        if error.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="Spotify is rate-limiting artist lookups. Try again shortly.") from error
-        raise HTTPException(status_code=502, detail="Spotify could not load that artist. Try again shortly.") from error
-    except (httpx.HTTPError, ValueError) as error:
-        raise HTTPException(status_code=502, detail="Spotify could not load that artist. Try again shortly.") from error
 
 
 @app.get("/api/selected/live")
@@ -477,6 +449,316 @@ async def selected_history(
             "imageUrl": None,
         }
     return {"chartType": chart_type, "country": country, "entity": entity, "points": points}
+
+
+def focused_artist_matches(entry: dict[str, Any], entity_type: str) -> bool:
+    metadata = entry.get({"track": "trackMetadata", "artist": "artistMetadata", "album": "albumMetadata"}[entity_type]) or {}
+    if entity_type == "artist":
+        artist_uri = metadata.get("artistUri") or entry_entity_uri(entry)
+        artist_name = metadata.get("artistName") or ""
+        return artist_uri == FOCUSED_ARTIST_URI or artist_name.casefold() == FOCUSED_ARTIST_NAME.casefold()
+
+    artists = metadata.get("artists") or []
+    return any(
+        isinstance(artist, dict)
+        and (
+            artist.get("spotifyUri") == FOCUSED_ARTIST_URI
+            or artist.get("uri") == FOCUSED_ARTIST_URI
+            or str(artist.get("name", "")).casefold() == FOCUSED_ARTIST_NAME.casefold()
+        )
+        for artist in artists
+    )
+
+
+def focused_chart_item(entry: dict[str, Any], country_code: str, chart_date: str) -> dict[str, Any] | None:
+    values = snapshot_values(entry)
+    if not values:
+        return None
+
+    entity_type, name, artists, streams, rank = values
+    metadata = entry.get({"track": "trackMetadata", "artist": "artistMetadata", "album": "albumMetadata"}[entity_type]) or {}
+    stats = entry.get("chartEntryData") or {}
+    metric = stats.get("rankingMetric") or {}
+    return {
+        "entityUri": entry_entity_uri(entry),
+        "entityType": entity_type,
+        "entityName": name,
+        "artistNames": artists,
+        "imageUrl": metadata.get("displayImageUri"),
+        "regionCode": country_code,
+        "regionName": COUNTRY_NAMES.get(country_code, country_code),
+        "chartRank": stats.get("currentRank") or rank,
+        "previousRank": stats.get("previousRank"),
+        "peakRank": stats.get("peakRank"),
+        "consecutiveAppearancesOnChart": stats.get("consecutiveAppearancesOnChart"),
+        "appearancesOnChart": stats.get("appearancesOnChart"),
+        "entryDate": stats.get("entryDate"),
+        "metricType": metric.get("type"),
+        "metricValue": metric.get("value") if metric.get("value") is not None else streams,
+        "chartDate": chart_date,
+    }
+
+
+@app.get("/api/focused/live")
+async def focused_live(
+    cadence: Literal["daily", "weekly"] = Query("daily"),
+    entity_type: Literal["track", "artist", "album"] = Query("track"),
+    refresh: bool = Query(False),
+) -> dict[str, Any]:
+    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+    cache_key = (cadence, entity_type)
+    async with focused_chart_cache_lock:
+        cached = focused_chart_cache.get(cache_key)
+        if not refresh and cached and time.monotonic() - cached[0] < FOCUSED_CHART_CACHE_TTL:
+            return cached[1]
+
+    scraper = await get_spotify_scraper()
+    method = getattr(scraper, CHART_METHODS[chart_type])
+    markets = list(Countries)
+    semaphore = asyncio.Semaphore(6)
+    history_saved_regions = 0
+    history_storage_available = True
+
+    async def fetch_market(country) -> tuple[Any, dict[str, Any] | None, bool]:
+        nonlocal history_storage_available
+        async with semaphore:
+            try:
+                payload = await method(country.value, "latest")
+            except (httpx.HTTPError, ValueError):
+                return country, None, False
+
+            entries = payload.get("entries") if isinstance(payload, dict) else None
+            if not isinstance(entries, list):
+                return country, None, False
+
+            saved = False
+            try:
+                history = await prepare_chart_history(chart_type, country.value, "latest", payload, None)
+                saved = bool(history.get("supported"))
+            except (ChartHistoryStorageError, HTTPException):
+                history_storage_available = False
+            return country, payload, saved
+
+    results = await asyncio.gather(*(fetch_market(country) for country in markets))
+    releases: dict[str, dict[str, Any]] = {}
+    regions: list[dict[str, Any]] = []
+    failed_regions: list[str] = []
+
+    for country, payload, saved in results:
+        if payload is None:
+            failed_regions.append(COUNTRY_NAMES.get(country.value, country.value))
+            continue
+        if saved:
+            history_saved_regions += 1
+
+        display_chart = payload.get("displayChart") or {}
+        chart_date = str(display_chart.get("date") or "Latest")
+        region_items = []
+        for entry in payload.get("entries") or []:
+            if not isinstance(entry, dict) or not focused_artist_matches(entry, entity_type):
+                continue
+            item = focused_chart_item(entry, country.value, chart_date)
+            if not item or not item["entityUri"]:
+                continue
+            region_items.append(item)
+            release = releases.setdefault(item["entityUri"], {
+                "entityUri": item["entityUri"],
+                "entityType": item["entityType"],
+                "entityName": item["entityName"],
+                "artistNames": item["artistNames"],
+                "imageUrl": item["imageUrl"],
+                "regions": [],
+            })
+            release["regions"].append({key: value for key, value in item.items() if key not in {"entityUri", "entityType", "entityName", "artistNames", "imageUrl"}})
+
+        if region_items:
+            region_items.sort(key=lambda item: item["chartRank"] or 10_000)
+            regions.append({
+                "regionCode": country.value,
+                "regionName": COUNTRY_NAMES.get(country.value, country.value),
+                "chartDate": chart_date,
+                "entries": region_items,
+            })
+
+    if not regions and failed_regions:
+        raise HTTPException(status_code=502, detail="Spotify could not load any regional charts. Try again shortly.")
+
+    regions.sort(key=lambda region: (region["regionCode"] != "GLOBAL", region["regionName"]))
+    release_items = list(releases.values())
+    release_items.sort(key=lambda release: (-len(release["regions"]), release["entityName"].casefold()))
+    response = {
+        "artist": {"entityUri": FOCUSED_ARTIST_URI, "entityName": FOCUSED_ARTIST_NAME},
+        "cadence": cadence,
+        "entityType": entity_type,
+        "chartType": chart_type,
+        "marketsScanned": len(markets) - len(failed_regions),
+        "matchingRegions": len(regions),
+        "failedRegions": failed_regions,
+        "historySavedRegions": history_saved_regions,
+        "historyStorageAvailable": history_storage_available,
+        "releases": release_items,
+        "regions": regions,
+    }
+    async with focused_chart_cache_lock:
+        focused_chart_cache[cache_key] = (time.monotonic(), response)
+    return response
+
+
+def history_start_date(range_value: str) -> calendar_date | None:
+    if range_value == "all":
+        return None
+    try:
+        days = int(range_value)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Choose a valid history range.") from error
+    if days < 1 or days > 3650:
+        raise HTTPException(status_code=400, detail="Choose a valid history range.")
+    return calendar_date.today() - timedelta(days=days)
+
+
+def focused_history_filter_sql() -> str:
+    return """(($2 = 'artist' AND track_uri = $5) OR ($2 IN ('track', 'album') AND $6 = ANY(string_to_array(COALESCE(artist_names, ''), ', '))))"""
+
+
+def history_point(row) -> dict[str, Any]:
+    country_code = row["country_code"]
+    return {
+        "entityUri": row["track_uri"],
+        "entityType": row["entity_type"],
+        "entityName": row["track_name"],
+        "artistNames": row["artist_names"],
+        "regionCode": country_code,
+        "regionName": COUNTRY_NAMES.get(country_code, country_code),
+        "chartDate": row["chart_date"].isoformat(),
+        "chartRank": row["chart_rank"],
+        "streamCount": row["stream_count"],
+    }
+
+
+def group_history_points(points: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    releases: dict[str, dict[str, Any]] = {}
+    regions: dict[str, dict[str, Any]] = {}
+    for point in points:
+        release = releases.setdefault(point["entityUri"], {
+            "entityUri": point["entityUri"],
+            "entityType": point["entityType"],
+            "entityName": point["entityName"],
+            "artistNames": point["artistNames"],
+            "imageUrl": None,
+            "regions": [],
+        })
+        release["regions"].append(point)
+        region = regions.setdefault(point["regionCode"], {
+            "regionCode": point["regionCode"],
+            "regionName": point["regionName"],
+            "entries": [],
+        })
+        region["entries"].append(point)
+
+    release_items = list(releases.values())
+    for release in release_items:
+        release["regions"].sort(key=lambda point: (point["regionCode"] != "GLOBAL", point["regionName"]))
+    release_items.sort(key=lambda release: (-len(release["regions"]), release["entityName"].casefold()))
+    region_items = list(regions.values())
+    for region in region_items:
+        region["entries"].sort(key=lambda point: point["chartRank"] if point["chartRank"] is not None else 10_000)
+    region_items.sort(key=lambda region: (region["regionCode"] != "GLOBAL", region["regionName"]))
+    return release_items, region_items
+
+
+@app.get("/api/focused/history")
+async def focused_history(
+    cadence: Literal["daily", "weekly"] = Query("daily"),
+    entity_type: Literal["track", "artist", "album"] = Query("track"),
+    range: str = Query("90", min_length=1, max_length=10),
+) -> dict[str, Any]:
+    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+    start_date = history_start_date(range)
+    market_codes = [country.value for country in Countries]
+    try:
+        pool = await get_history_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT DISTINCT ON (country_code, track_uri)
+                track_uri, entity_type, track_name, artist_names, country_code, chart_date, chart_rank, stream_count
+            FROM public.spotify_chart_snapshots
+            WHERE chart_type = $1 AND entity_type = $2 AND country_code = ANY($3::text[])
+              AND ($4::date IS NULL OR chart_date >= $4::date)
+              AND {focused_history_filter_sql()}
+            ORDER BY country_code, track_uri, chart_date DESC, fetched_at DESC
+            """,
+            chart_type,
+            entity_type,
+            market_codes,
+            start_date,
+            FOCUSED_ARTIST_URI,
+            FOCUSED_ARTIST_NAME,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Taylor Swift chart history is temporarily unavailable.") from error
+
+    points = [history_point(row) for row in rows]
+    releases, regions = group_history_points(points)
+    return {
+        "artist": {"entityUri": FOCUSED_ARTIST_URI, "entityName": FOCUSED_ARTIST_NAME},
+        "cadence": cadence,
+        "entityType": entity_type,
+        "chartType": chart_type,
+        "range": range,
+        "snapshotRows": len(points),
+        "releases": releases,
+        "regions": regions,
+    }
+
+
+@app.get("/api/focused/history/trend")
+async def focused_history_trend(
+    entity_uri: str = Query(..., min_length=16, max_length=128),
+    cadence: Literal["daily", "weekly"] = Query("daily"),
+    entity_type: Literal["track", "artist", "album"] = Query("track"),
+    range: str = Query("90", min_length=1, max_length=10),
+) -> dict[str, Any]:
+    if not is_valid_entity_uri(entity_uri, entity_type):
+        raise HTTPException(status_code=400, detail="Choose a valid chart release.")
+    if entity_type == "artist" and entity_uri != FOCUSED_ARTIST_URI:
+        raise HTTPException(status_code=404, detail="That artist is outside the focused chart selection.")
+
+    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+    start_date = history_start_date(range)
+    market_codes = [country.value for country in Countries]
+    try:
+        pool = await get_history_pool()
+        rows = await pool.fetch(
+            """
+            SELECT track_uri, entity_type, track_name, artist_names, country_code, chart_date, chart_rank, stream_count
+            FROM public.spotify_chart_snapshots
+            WHERE chart_type = $1 AND entity_type = $2 AND track_uri = $3
+              AND country_code = ANY($4::text[]) AND ($5::date IS NULL OR chart_date >= $5::date)
+              AND (($2 = 'artist' AND $3 = $6) OR ($2 IN ('track', 'album') AND $7 = ANY(string_to_array(COALESCE(artist_names, ''), ', '))))
+            ORDER BY country_code ASC, chart_date ASC
+            """,
+            chart_type,
+            entity_type,
+            entity_uri,
+            market_codes,
+            start_date,
+            FOCUSED_ARTIST_URI,
+            FOCUSED_ARTIST_NAME,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Taylor Swift chart history is temporarily unavailable.") from error
+
+    points = [history_point(row) for row in rows]
+    entity = None if not points else {key: points[0][key] for key in ("entityUri", "entityType", "entityName", "artistNames")}
+    return {
+        "artist": {"entityUri": FOCUSED_ARTIST_URI, "entityName": FOCUSED_ARTIST_NAME},
+        "entity": entity,
+        "cadence": cadence,
+        "entityType": entity_type,
+        "chartType": chart_type,
+        "range": range,
+        "points": points,
+    }
 
 
 @app.get("/auth/login")

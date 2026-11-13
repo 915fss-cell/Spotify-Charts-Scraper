@@ -13,7 +13,14 @@ from fastapi import HTTPException
 from spotify_charts import SpotifyCharts
 
 
-CHART_STEPS = {"daily_top_songs": 1, "weekly_top_songs": 7, "daily_top_artists": 1, "weekly_top_artists": 7}
+CHART_STEPS = {
+    "daily_top_songs": 1,
+    "weekly_top_songs": 7,
+    "daily_top_artists": 1,
+    "weekly_top_artists": 7,
+    "daily_top_albums": 1,
+    "weekly_top_albums": 7,
+}
 BACKFILL_BATCH_SIZE = 6
 BACKFILL_CONCURRENCY = 3
 LEASE_DURATION = timedelta(minutes=3)
@@ -83,13 +90,16 @@ def chart_date_from_payload(payload: dict[str, Any], requested_date: str) -> dat
 def entry_entity_uri(entry: dict[str, Any]) -> str | None:
     track_metadata = entry.get("trackMetadata") or {}
     artist_metadata = entry.get("artistMetadata") or {}
+    album_metadata = entry.get("albumMetadata") or {}
     uri = (
         track_metadata.get("trackUri")
         or artist_metadata.get("artistUri")
+        or album_metadata.get("albumUri")
         or entry.get("trackUri")
         or entry.get("artistUri")
+        or entry.get("albumUri")
     )
-    if isinstance(uri, str) and uri.startswith(("spotify:track:", "spotify:artist:")):
+    if isinstance(uri, str) and uri.startswith(("spotify:track:", "spotify:artist:", "spotify:album:")):
         return uri
     return None
 
@@ -98,8 +108,9 @@ def snapshot_values(entry: dict[str, Any]) -> tuple[str, str, str, int | None, i
     uri = entry_entity_uri(entry)
     if uri is None:
         return None
-    entity_type = "artist" if uri.startswith("spotify:artist:") else "track"
-    metadata = entry.get("artistMetadata" if entity_type == "artist" else "trackMetadata") or {}
+    entity_type = uri.split(":")[1]
+    metadata_key = {"track": "trackMetadata", "artist": "artistMetadata", "album": "albumMetadata"}[entity_type]
+    metadata = entry.get(metadata_key) or {}
     stats = entry.get("chartEntryData") or {}
     metric = stats.get("rankingMetric") or {}
     streams: int | None = None
@@ -129,7 +140,7 @@ def snapshot_values(entry: dict[str, Any]) -> tuple[str, str, str, int | None, i
         if isinstance(name, str) and name.strip():
             artist_names.append(name.strip())
 
-    entity_name = metadata.get("trackName" if entity_type == "track" else "artistName")
+    entity_name = metadata.get({"track": "trackName", "artist": "artistName", "album": "albumName"}[entity_type])
     if not isinstance(entity_name, str) or not entity_name.strip():
         entity_name = "Untitled"
     return entity_type, entity_name.strip(), ", ".join(artist_names), streams, rank
@@ -370,7 +381,7 @@ async def prepare_chart_history(
             "supported": False,
             "complete": False,
             "status": "unsupported",
-            "reason": "Historical snapshots are available for daily and weekly Top Songs and Top Artists charts.",
+            "reason": "Historical snapshots are available for daily and weekly Top Songs, Top Artists, and Top Albums charts.",
         }
 
     entries = [
