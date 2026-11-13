@@ -14,6 +14,19 @@
   let liveRequest = 0;
   let historyRequest = 0;
   const authChannel = "BroadcastChannel" in window ? new BroadcastChannel("spotify-charts-auth") : null;
+  const focusedArtists = [
+    { uri: "spotify:artist:06HL4z0CvFAxyc27GXpf02", name: "Taylor Swift" },
+    { uri: "spotify:artist:4UIOuc84ExWojcUzFGtbW8", name: "Felix" },
+  ];
+  const focusedArtistUris = focusedArtists.map((artist) => artist.uri);
+  const focusedArtistNames = focusedArtists.map((artist) => artist.name.toLowerCase());
+  const focusedTrackUri = "spotify:track:15fpZUMOQD9ONTjxITFXFT";
+
+  function focusedSelectionName(entityType = state.entityType) {
+    if (entityType === "artist") return "Taylor Swift and Felix";
+    if (entityType === "track") return "Taylor Swift, Felix, and Unfair";
+    return "Taylor Swift and Felix";
+  }
 
   function setStatus(id, message, isError = false) {
     const element = byId(id);
@@ -95,7 +108,7 @@
     const titleMarkup = url
       ? `<a class="focus-row-title" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${title}</a>`
       : `<strong class="focus-row-title">${title}</strong>`;
-    const subtitle = item.artistNames || (state.entityType === "artist" ? "Taylor Swift" : "");
+    const subtitle = item.artistNames || (state.entityType === "artist" ? "Selected artist" : "");
     const artwork = item.imageUrl
       ? `<img class="focus-row-art" src="${escapeHtml(item.imageUrl)}" alt="" loading="lazy" />`
       : '<span class="focus-row-art" aria-hidden="true"></span>';
@@ -108,7 +121,7 @@
     const titleMarkup = url
       ? `<a class="focus-release-title" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${title}</a>`
       : `<strong class="focus-release-title">${title}</strong>`;
-    const artistNames = release.artistNames || (state.entityType === "artist" ? "Taylor Swift" : entityTypeName());
+    const artistNames = release.artistNames || (state.entityType === "artist" ? "Selected artist" : entityTypeName());
     const regions = release.regions || [];
     return `<article class="focus-release-card"><header class="focus-release-heading">${coverMarkup(release.imageUrl, release.entityName)}<div class="focus-release-copy">${titleMarkup}<p class="focus-release-subtitle">${escapeHtml(artistNames)}</p></div><span class="focus-region-count">${regions.length} ${regions.length === 1 ? "region" : "regions"}</span></header><div class="focus-data-list">${regions.map((region) => releaseRegionRow(region, isHistory)).join("")}</div></article>`;
   }
@@ -124,7 +137,7 @@
     const container = byId(containerId);
     const items = state.view === "release" ? releases : regions;
     if (!items.length) {
-      container.innerHTML = `<p class="focus-empty">No Taylor Swift ${escapeHtml(entityTypeName())} chart entries were found in ${isHistory ? "the saved history range" : "the current charts"}.${isHistory ? " More history appears as regional chart snapshots are collected." : ""}</p>`;
+      container.innerHTML = `<p class="focus-empty">No ${escapeHtml(focusedSelectionName())} ${escapeHtml(entityTypeName())} chart entries were found in ${isHistory ? "the saved history range" : "the current charts"}.${isHistory ? " More history appears as regional chart snapshots are collected." : ""}</p>`;
       return;
     }
     container.innerHTML = state.view === "release"
@@ -134,9 +147,7 @@
 
   function renderLive(payload) {
     byId("live-results-title").textContent = state.view === "release"
-      ? state.entityType === "artist"
-        ? "Taylor Swift in the artist chart"
-        : `Taylor Swift ${state.entityType === "track" ? "songs" : "albums"} charting now`
+      ? `${focusedSelectionName()} ${state.entityType === "artist" ? "in the artist chart" : `${state.entityType === "track" ? "songs" : "albums"} charting now`}`
       : `${chartTypeName()} by region`;
     const count = state.view === "release" ? payload.releases.length : payload.regions.length;
     const matchingRegionLabel = payload.matchingRegions === 1 ? "region" : "regions";
@@ -161,18 +172,20 @@
   }
 
   function buildGlobalOverview(chart) {
-    const artistUri = "spotify:artist:06HL4z0CvFAxyc27GXpf02";
     const chartDate = String(chart.displayChart?.date || "Latest");
     const metadataKey = { track: "trackMetadata", artist: "artistMetadata", album: "albumMetadata" }[state.entityType];
     const entries = (chart.entries || []).filter((entry) => {
       const metadata = entry[metadataKey] || {};
       if (state.entityType === "artist") {
         const uri = metadata.artistUri || entry.artistUri;
-        const name = metadata.artistName || "";
-        return uri === artistUri || name.toLowerCase() === "taylor swift";
+        const name = String(metadata.artistName || "").toLowerCase();
+        return focusedArtistUris.includes(uri) || focusedArtistNames.includes(name);
       }
+      const entityUri = metadata.trackUri || metadata.albumUri || entry.trackUri || entry.albumUri;
+      if (state.entityType === "track" && entityUri === focusedTrackUri) return true;
       return (metadata.artists || []).some((artist) => artist && (
-        artist.spotifyUri === artistUri || artist.uri === artistUri || String(artist.name || "").toLowerCase() === "taylor swift"
+        focusedArtistUris.includes(artist.spotifyUri || artist.uri)
+        || focusedArtistNames.includes(String(artist.name || "").toLowerCase())
       ));
     }).map((entry) => {
       const metadata = entry[metadataKey] || {};
@@ -184,7 +197,7 @@
         entityUri: uri,
         entityType: state.entityType,
         entityName: metadata.trackName || metadata.artistName || metadata.albumName || "Untitled",
-        artistNames: state.entityType === "artist" ? (metadata.artistName || "Taylor Swift") : (metadata.artists || []).map((artist) => artist?.name).filter(Boolean).join(", "),
+        artistNames: state.entityType === "artist" ? (metadata.artistName || "Selected artist") : (metadata.artists || []).map((artist) => artist?.name).filter(Boolean).join(", " ),
         imageUrl: metadata.displayImageUri || null,
         regionCode: "GLOBAL",
         regionName: "Global",
@@ -221,7 +234,7 @@
       }],
     }));
     return {
-      artist: { entityUri: artistUri, entityName: "Taylor Swift" },
+      artist: { entityName: "Taylor Swift and Felix" },
       cadence: state.cadence,
       entityType: state.entityType,
       chartType: `${state.cadence}_top_${{ track: "songs", artist: "artists", album: "albums" }[state.entityType]}`,
@@ -260,8 +273,8 @@
     byId("live-refresh").textContent = state.marketScope === "global" ? "Loading Global…" : "Loading regions…";
     byId("live-results-count").textContent = state.marketScope === "global" ? "Loading Global chart…" : "Scanning all Spotify regions…";
     setStatus("live-status", state.marketScope === "global"
-      ? `Loading Taylor Swift ${entityTypeName()} chart for Global…`
-      : `Loading Taylor Swift ${entityTypeName()} charts across all regions…`);
+      ? `Loading ${focusedSelectionName()} ${entityTypeName()} chart for Global…`
+      : `Loading ${focusedSelectionName()} ${entityTypeName()} charts across all regions…`);
     try {
       const payload = await fetchLiveOverview(refresh);
       if (requestId === liveRequest && activePage === "live") renderLive(payload);
@@ -291,16 +304,16 @@
     byId("history-chart-card").hidden = true;
     const covers = new Map((liveOverview?.releases || []).map((release) => [release.entityUri, release.imageUrl]));
     payload.releases.forEach((release) => { release.imageUrl = covers.get(release.entityUri) || null; });
-    byId("history-results-title").textContent = state.view === "release" ? "Taylor Swift history by release" : "Taylor Swift history by region";
+    byId("history-results-title").textContent = state.view === "release" ? `${focusedSelectionName()} history by release` : `${focusedSelectionName()} history by region`;
     byId("history-results-count").textContent = `${payload.releases.length} releases · ${payload.regions.length} regions · ${payload.snapshotRows.toLocaleString()} snapshots`;
     renderResultCards("history-results", payload.releases, payload.regions, true);
     const empty = payload.snapshotRows === 0;
     const nextStep = empty ? "No saved snapshots are available in this range yet. Current regional charts will be captured as they load." : "Choose View trend on a release to compare its rank or streams across regions.";
-    setStatus("selected-history-status", `${payload.snapshotRows.toLocaleString()} Taylor Swift ${entityTypeName()} snapshots across ${payload.regions.length} regions. ${nextStep}`);
+    setStatus("selected-history-status", `${payload.snapshotRows.toLocaleString()} ${focusedSelectionName()} ${entityTypeName()} snapshots across ${payload.regions.length} regions. ${nextStep}`);
     byId("history-chart").hidden = true;
     byId("history-empty").hidden = false;
     byId("history-empty").textContent = "Choose a release below to compare its chart history across regions.";
-    byId("history-chart-title").textContent = "Taylor Swift history by region";
+    byId("history-chart-title").textContent = `${focusedSelectionName()} history by region`;
     byId("history-chart-range").textContent = "Choose a release to view its trend";
     if (historyChart) {
       historyChart.destroy();
@@ -310,7 +323,7 @@
 
   async function loadFocusedHistory(refreshLive = false) {
     const requestId = ++historyRequest;
-    setStatus("selected-history-status", "Loading Taylor Swift snapshots across regions…");
+    setStatus("selected-history-status", `Loading ${focusedSelectionName()} snapshots across regions…`);
     try {
       const key = currentKey();
       if (refreshLive || liveKey !== key || Date.now() - liveLoadedAt > 120000) {
@@ -394,7 +407,7 @@
         },
       });
     }
-    const entityName = payload.entity?.entityName || "Taylor Swift";
+    const entityName = payload.entity?.entityName || focusedSelectionName();
     byId("history-chart-card").hidden = false;
     byId("history-chart-title").textContent = `${entityName} · ${metric === "rank" ? "rank" : "streams"} by region`;
     byId("history-chart-range").textContent = `${points.length} snapshots · ${regions.length} regions`;

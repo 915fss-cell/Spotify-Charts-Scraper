@@ -49,8 +49,14 @@ HISTORY_CHART_TYPES = {
     "daily_top_albums": "album",
     "weekly_top_albums": "album",
 }
-FOCUSED_ARTIST_URI = "spotify:artist:06HL4z0CvFAxyc27GXpf02"
-FOCUSED_ARTIST_NAME = "Taylor Swift"
+FOCUSED_ARTISTS = (
+    {"uri": "spotify:artist:06HL4z0CvFAxyc27GXpf02", "name": "Taylor Swift"},
+    {"uri": "spotify:artist:4UIOuc84ExWojcUzFGtbW8", "name": "Felix"},
+)
+FOCUSED_ARTIST_URIS = [artist["uri"] for artist in FOCUSED_ARTISTS]
+FOCUSED_ARTIST_NAMES = [artist["name"] for artist in FOCUSED_ARTISTS]
+FOCUSED_ARTIST_NAME = "Taylor Swift and Felix"
+FOCUSED_TRACK_URI = "spotify:track:15fpZUMOQD9ONTjxITFXFT"
 FOCUSED_CHART_CACHE_TTL = 180
 focused_chart_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 focused_chart_cache_lock = asyncio.Lock()
@@ -460,16 +466,19 @@ def focused_artist_matches(entry: dict[str, Any], entity_type: str) -> bool:
     metadata = entry.get({"track": "trackMetadata", "artist": "artistMetadata", "album": "albumMetadata"}[entity_type]) or {}
     if entity_type == "artist":
         artist_uri = metadata.get("artistUri") or entry_entity_uri(entry)
-        artist_name = metadata.get("artistName") or ""
-        return artist_uri == FOCUSED_ARTIST_URI or artist_name.casefold() == FOCUSED_ARTIST_NAME.casefold()
+        artist_name = str(metadata.get("artistName") or "").casefold()
+        return artist_uri in FOCUSED_ARTIST_URIS or artist_name in {name.casefold() for name in FOCUSED_ARTIST_NAMES}
+
+    if entity_type == "track" and entry_entity_uri(entry) == FOCUSED_TRACK_URI:
+        return True
 
     artists = metadata.get("artists") or []
     return any(
         isinstance(artist, dict)
         and (
-            artist.get("spotifyUri") == FOCUSED_ARTIST_URI
-            or artist.get("uri") == FOCUSED_ARTIST_URI
-            or str(artist.get("name", "")).casefold() == FOCUSED_ARTIST_NAME.casefold()
+            artist.get("spotifyUri") in FOCUSED_ARTIST_URIS
+            or artist.get("uri") in FOCUSED_ARTIST_URIS
+            or str(artist.get("name", "")).casefold() in {name.casefold() for name in FOCUSED_ARTIST_NAMES}
         )
         for artist in artists
     )
@@ -594,7 +603,7 @@ async def focused_live(
     release_items = list(releases.values())
     release_items.sort(key=lambda release: (-len(release["regions"]), release["entityName"].casefold()))
     response = {
-        "artist": {"entityUri": FOCUSED_ARTIST_URI, "entityName": FOCUSED_ARTIST_NAME},
+        "artist": {"entityName": FOCUSED_ARTIST_NAME},
         "cadence": cadence,
         "entityType": entity_type,
         "chartType": chart_type,
@@ -626,7 +635,7 @@ def history_start_date(range_value: str) -> calendar_date | None:
 
 
 def focused_history_filter_sql() -> str:
-    return """(($2 = 'artist' AND track_uri = $5) OR ($2 IN ('track', 'album') AND $6 = ANY(string_to_array(COALESCE(artist_names, ''), ', '))))"""
+    return """(($2 = 'artist' AND track_uri = ANY($5::text[])) OR ($2 IN ('track', 'album') AND (track_uri = $6 OR string_to_array(COALESCE(artist_names, ''), ', ') && $7::text[])))"""
 
 
 def history_point(row) -> dict[str, Any]:
@@ -700,16 +709,17 @@ async def focused_history(
             entity_type,
             market_codes,
             start_date,
-            FOCUSED_ARTIST_URI,
-            FOCUSED_ARTIST_NAME,
+            FOCUSED_ARTIST_URIS,
+            FOCUSED_TRACK_URI,
+            FOCUSED_ARTIST_NAMES,
         )
     except Exception as error:
-        raise HTTPException(status_code=503, detail="Taylor Swift chart history is temporarily unavailable.") from error
+        raise HTTPException(status_code=503, detail="Focused chart history is temporarily unavailable.") from error
 
     points = [history_point(row) for row in rows]
     releases, regions = group_history_points(points)
     return {
-        "artist": {"entityUri": FOCUSED_ARTIST_URI, "entityName": FOCUSED_ARTIST_NAME},
+        "artist": {"entityName": FOCUSED_ARTIST_NAME},
         "cadence": cadence,
         "entityType": entity_type,
         "chartType": chart_type,
@@ -729,7 +739,7 @@ async def focused_history_trend(
 ) -> dict[str, Any]:
     if not is_valid_entity_uri(entity_uri, entity_type):
         raise HTTPException(status_code=400, detail="Choose a valid chart release.")
-    if entity_type == "artist" and entity_uri != FOCUSED_ARTIST_URI:
+    if entity_type == "artist" and entity_uri not in FOCUSED_ARTIST_URIS:
         raise HTTPException(status_code=404, detail="That artist is outside the focused chart selection.")
 
     chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
@@ -743,7 +753,7 @@ async def focused_history_trend(
             FROM public.spotify_chart_snapshots
             WHERE chart_type = $1 AND entity_type = $2 AND track_uri = $3
               AND country_code = ANY($4::text[]) AND ($5::date IS NULL OR chart_date >= $5::date)
-              AND (($2 = 'artist' AND $3 = $6) OR ($2 IN ('track', 'album') AND $7 = ANY(string_to_array(COALESCE(artist_names, ''), ', '))))
+              AND (($2 = 'artist' AND $3 = ANY($6::text[])) OR ($2 IN ('track', 'album') AND ($3 = $7 OR string_to_array(COALESCE(artist_names, ''), ', ') && $8::text[])))
             ORDER BY country_code ASC, chart_date ASC
             """,
             chart_type,
@@ -751,16 +761,17 @@ async def focused_history_trend(
             entity_uri,
             market_codes,
             start_date,
-            FOCUSED_ARTIST_URI,
-            FOCUSED_ARTIST_NAME,
+            FOCUSED_ARTIST_URIS,
+            FOCUSED_TRACK_URI,
+            FOCUSED_ARTIST_NAMES,
         )
     except Exception as error:
-        raise HTTPException(status_code=503, detail="Taylor Swift chart history is temporarily unavailable.") from error
+        raise HTTPException(status_code=503, detail="Focused chart history is temporarily unavailable.") from error
 
     points = [history_point(row) for row in rows]
     entity = None if not points else {key: points[0][key] for key in ("entityUri", "entityType", "entityName", "artistNames")}
     return {
-        "artist": {"entityUri": FOCUSED_ARTIST_URI, "entityName": FOCUSED_ARTIST_NAME},
+        "artist": {"entityName": FOCUSED_ARTIST_NAME},
         "entity": entity,
         "cadence": cadence,
         "entityType": entity_type,

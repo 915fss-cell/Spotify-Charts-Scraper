@@ -70,8 +70,8 @@
       <main class="main page-panel focused-page" id="live" data-page-panel="live" hidden>
         <div class="topline"><span class="eyebrow">Artist chart dashboard</span><div class="focus-header-actions"><button class="quiet-button" id="live-refresh" type="button">Load all regions</button><button class="connect-button" id="live-connect" type="button">Connect Spotify</button></div></div>
         <section class="intro" aria-labelledby="live-title">
-          <div><h1 id="live-title">Live charts<span style="color:var(--lime)">.</span></h1><p>See Taylor Swift&apos;s Global chart placement first, then scan all regions for more appearances.</p></div>
-          <a class="focus-artist-badge" href="https://open.spotify.com/artist/06HL4z0CvFAxyc27GXpf02" target="_blank" rel="noreferrer">Taylor Swift <span aria-hidden="true">↗</span></a>
+          <div><h1 id="live-title">Live charts<span style="color:var(--lime)">.</span></h1><p>Follow Taylor Swift and Felix, plus the song Unfair, on Global charts and across all regions.</p></div>
+          <div><a class="focus-artist-badge" href="https://open.spotify.com/artist/06HL4z0CvFAxyc27GXpf02" target="_blank" rel="noreferrer">Taylor Swift <span aria-hidden="true">↗</span></a> <a class="focus-artist-badge" href="https://open.spotify.com/artist/4UIOuc84ExWojcUzFGtbW8" target="_blank" rel="noreferrer">Felix <span aria-hidden="true">↗</span></a> <a class="focus-artist-badge" href="https://open.spotify.com/track/15fpZUMOQD9ONTjxITFXFT" target="_blank" rel="noreferrer">Unfair <span aria-hidden="true">↗</span></a></div>
         </section>
         <div class="focus-toolbar" aria-label="Live chart controls">
           <div class="focus-toolbar-row"><div class="focus-control-group" role="group" aria-label="Chart cadence"><span class="focus-control-label">Cadence</span><div class="focus-segmented"><button class="focus-tab" type="button" data-focus-key="cadence" data-focus-value="daily" aria-pressed="true">Daily</button><button class="focus-tab" type="button" data-focus-key="cadence" data-focus-value="weekly" aria-pressed="false">Weekly</button></div></div></div>
@@ -80,15 +80,15 @@
             <div class="focus-control-group" role="group" aria-label="Release chart type"><span class="focus-control-label">Chart type</span><div class="focus-segmented"><button class="focus-tab" type="button" data-focus-key="entityType" data-focus-value="track" aria-pressed="true">Song</button><button class="focus-tab" type="button" data-focus-key="entityType" data-focus-value="artist" aria-pressed="false">Artist</button><button class="focus-tab" type="button" data-focus-key="entityType" data-focus-value="album" aria-pressed="false">Album</button></div></div>
           </div>
         </div>
-        <div class="focus-results-head"><h2 id="live-results-title">Taylor Swift releases charting now</h2><span class="focus-results-meta" id="live-results-count">Loading regional charts…</span></div>
+        <div class="focus-results-head"><h2 id="live-results-title">Taylor Swift, Felix, and Unfair charting now</h2><span class="focus-results-meta" id="live-results-count">Loading regional charts…</span></div>
         <p class="page-status" id="live-status" role="status" aria-live="polite">Loading Taylor Swift across Spotify regions…</p>
         <div class="focus-card-grid" id="live-results" aria-live="polite"></div>
       </main>
       <main class="main page-panel focused-page" id="history" data-page-panel="history" hidden>
         <div class="topline"><span class="eyebrow">Artist chart history</span><div class="focus-header-actions"><button class="quiet-button" id="history-refresh" type="button">Refresh history</button><button class="connect-button" id="history-connect" type="button">Connect Spotify</button></div></div>
         <section class="intro" aria-labelledby="history-title">
-          <div><h1 id="history-title">History<span style="color:var(--lime)">.</span></h1><p>Historical rankings and chart streams for Taylor Swift across every region with saved snapshots.</p></div>
-          <a class="focus-artist-badge" href="https://open.spotify.com/artist/06HL4z0CvFAxyc27GXpf02" target="_blank" rel="noreferrer">Taylor Swift <span aria-hidden="true">↗</span></a>
+          <div><h1 id="history-title">History<span style="color:var(--lime)">.</span></h1><p>Saved chart history for Taylor Swift, Felix, and Unfair across every region.</p></div>
+          <div><a class="focus-artist-badge" href="https://open.spotify.com/artist/06HL4z0CvFAxyc27GXpf02" target="_blank" rel="noreferrer">Taylor Swift <span aria-hidden="true">↗</span></a> <a class="focus-artist-badge" href="https://open.spotify.com/artist/4UIOuc84ExWojcUzFGtbW8" target="_blank" rel="noreferrer">Felix <span aria-hidden="true">↗</span></a> <a class="focus-artist-badge" href="https://open.spotify.com/track/15fpZUMOQD9ONTjxITFXFT" target="_blank" rel="noreferrer">Unfair <span aria-hidden="true">↗</span></a></div>
         </section>
         <div class="focus-toolbar" aria-label="History chart controls">
           <div class="focus-toolbar-row"><div class="focus-control-group" role="group" aria-label="Chart cadence"><span class="focus-control-label">Cadence</span><div class="focus-segmented"><button class="focus-tab" type="button" data-focus-key="cadence" data-focus-value="daily" aria-pressed="true">Daily</button><button class="focus-tab" type="button" data-focus-key="cadence" data-focus-value="weekly" aria-pressed="false">Weekly</button></div></div><div class="field focus-history-range"><label for="history-range">History range</label><select id="history-range"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="365">1 year</option><option value="all">All available</option></select></div></div>
@@ -98,12 +98,12 @@
             <div class="field focus-history-metric"><label for="history-metric">Trend metric</label><select id="history-metric"><option value="streams">Chart streams</option><option value="rank">Chart rank</option></select></div>
           </div>
         </div>
-        <p class="page-status" id="selected-history-status" role="status" aria-live="polite">Loading saved Taylor Swift chart snapshots…</p>
-        <div class="focus-results-head"><h2 id="history-results-title">Taylor Swift chart history</h2><span class="focus-results-meta" id="history-results-count">Loading snapshots…</span></div>
+        <p class="page-status" id="selected-history-status" role="status" aria-live="polite">Loading saved chart snapshots…</p>
+        <div class="focus-results-head"><h2 id="history-results-title">Selected chart history</h2><span class="focus-results-meta" id="history-results-count">Loading snapshots…</span></div>
         <div class="focus-card-grid" id="history-results" aria-live="polite"></div>
         <section class="chart-card history-chart-card" id="history-chart-card" aria-labelledby="history-chart-title" hidden>
-          <div class="chart-head"><span class="chart-title" id="history-chart-title">Taylor Swift history by region</span><span class="chart-date" id="history-chart-range">Choose a release to view its trend</span></div>
-          <div class="history-chart-wrap"><canvas id="history-chart" role="img" aria-label="Historical chart metrics by region for the selected Taylor Swift release" hidden></canvas><p id="history-empty" class="history-empty">Choose a release below to compare its chart history across regions.</p></div>
+          <div class="chart-head"><span class="chart-title" id="history-chart-title">Selected chart history by region</span><span class="chart-date" id="history-chart-range">Choose a release to view its trend</span></div>
+          <div class="history-chart-wrap"><canvas id="history-chart" role="img" aria-label="Historical chart metrics by region for the selected release" hidden></canvas><p id="history-empty" class="history-empty">Choose a release below to compare its chart history across regions.</p></div>
         </section>
       </main>
     </div>
