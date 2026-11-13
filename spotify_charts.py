@@ -18,7 +18,8 @@ redirect_port = spotify_settings.redirect_port
 
 redirect_url = f"{redirect_uri}:{redirect_port}"
 CHART_CACHE_TTL = 300
-CHART_REQUEST_INTERVAL = 1.5
+CHART_REQUEST_INTERVAL = 2.0
+CHART_RATE_LIMIT_MAX_COOLDOWN = 120.0
 _chart_cache: dict[str, tuple[float, dict]] = {}
 _chart_request_lock = asyncio.Lock()
 _next_chart_request_at = 0.0
@@ -32,6 +33,12 @@ async def _wait_for_chart_request_slot() -> None:
         _next_chart_request_at = max(now, _next_chart_request_at) + CHART_REQUEST_INTERVAL
     if delay:
         await asyncio.sleep(delay)
+
+
+async def _defer_chart_requests(delay: float) -> None:
+    global _next_chart_request_at
+    async with _chart_request_lock:
+        _next_chart_request_at = max(_next_chart_request_at, monotonic() + delay)
 
 
 class AuthRequestHandler(BaseHTTPRequestHandler):
@@ -133,7 +140,10 @@ class SpotifyCharts:
                     delay = max(float(retry_after), 0.25)
                 except (TypeError, ValueError):
                     delay = 0.5 * (2**attempt)
-                await asyncio.sleep(min(delay, 30))
+                if response.status_code == 429:
+                    await _defer_chart_requests(min(delay, CHART_RATE_LIMIT_MAX_COOLDOWN))
+                else:
+                    await asyncio.sleep(delay)
             payload = response.json()
         if not isinstance(payload, dict):
             raise ValueError("Spotify returned an unexpected chart response.")
