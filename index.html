@@ -321,11 +321,30 @@
           if (requestId !== chartLoadSequence) return;
           renderChart(payload);
           void continueChartHistory(payload, requestId);
-        } catch (error) {
+      } catch (error) {
+        if (requestId === chartLoadSequence) {
+          byId("section-title").textContent = "Chart unavailable";
+          byId("summary-meta").textContent = "No chart loaded";
+          byId("chart-title").textContent = "Chart preview";
+          byId("chart-date-label").textContent = "Unavailable";
+          byId("chart-content").className = "empty";
+          const emptyState = document.createElement("div");
+          const icon = document.createElement("span");
+          icon.className = "empty-icon";
+          icon.setAttribute("aria-hidden", "true");
+          icon.textContent = "!";
+          const heading = document.createElement("h3");
+          heading.textContent = "Chart unavailable";
+          const message = document.createElement("p");
+          message.textContent = error.message || "The chart could not be loaded. Try again shortly.";
+          emptyState.append(icon, heading, message);
+          byId("chart-content").replaceChildren(emptyState);
           showBanner(error.message, true);
-        } finally {
-          button.disabled = !appStatus?.connected;
-          button.textContent = "Load chart";
+        }
+      } finally {
+        button.disabled = !appStatus?.connected;
+        button.textContent = "Load chart";
+
         }
       });
       window.Chartroom = { byId, requestJson, escapeHtml, spotifyLink };
