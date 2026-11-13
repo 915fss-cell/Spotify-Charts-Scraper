@@ -38,6 +38,10 @@ The local client uses the legacy `CLIENT_ID`, `CLIENT_SECRET`, `REDIRECT_URL`, a
 - Weekly top artists
 - Weekly top albums
 
+## Historical chart streams
+
+Daily and weekly Top Songs charts save deduplicated snapshots and resumable backfill progress in Neon through `DATABASE_URL`. The dashboard backfills from the earliest entry date visible in the selected chart and sums `STREAMS` values only on dates the song appeared in that market and chart. These are chart-period streams, not the song's lifetime Spotify play count. The initial Neon schema must include `spotify_chart_snapshots` and `spotify_chart_backfills`.
+
 The chart service URLs used by this project are not part of Spotify's public Web API contract and may change. The notebook in `Testing.ipynb` contains an older example response; it is not live data.
 
 Copyright © [Henry Richard J](https://github.com/henry-richard7)

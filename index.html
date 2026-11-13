@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
     <style>
-      :root{color-scheme:dark;--bg:#111310;--panel:#191c18;--panel-2:#20241f;--line:#2c312a;--text:#f2f5ee;--muted:#92998d;--lime:#b8f26b;--lime-dark:#283b1d;--red:#ff817b;--radius:16px}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 18% -12%,#283520 0,transparent 36%),var(--bg);color:var(--text);font-family:"DM Sans",sans-serif;min-height:100vh}button,select,input{font:inherit}button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--lime);outline-offset:3px}.shell{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:100vh}.sidebar{border-right:1px solid var(--line);padding:28px 18px;display:flex;flex-direction:column;gap:38px}.brand{display:flex;align-items:center;gap:11px;padding:0 8px;font:700 17px "Space Grotesk",sans-serif;letter-spacing:-.5px}.brand-mark{width:31px;height:31px;display:grid;place-items:center;border-radius:10px;background:var(--lime);color:#14200d;font-size:15px}.nav-label{margin:0 10px 10px;color:#777e73;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase}.nav-link{display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:10px;color:#c7ccc2;text-decoration:none;font-size:13px}.nav-link.active{background:#262c22;color:var(--lime)}.nav-glyph{width:18px;text-align:center;font-size:15px}.side-note{margin-top:auto;padding:15px;border:1px solid var(--line);border-radius:13px;background:#171a16}.side-note strong{display:block;margin-bottom:6px;font-size:12px}.side-note p{margin:0;color:var(--muted);font-size:11px;line-height:1.55}.main{width:min(1250px,100%);padding:38px clamp(20px,5vw,64px) 56px;margin:0 auto}.topline{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:42px}.eyebrow{display:flex;align-items:center;gap:8px;color:var(--lime);font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase}.eyebrow::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--lime);box-shadow:0 0 14px #b8f26b99}.account-state{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:#c2c8bc;font-size:11px}.state-dot{width:7px;height:7px;border-radius:50%;background:#757c71}.state-dot.online{background:var(--lime);box-shadow:0 0 10px #b8f26b88}.intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:30px}.intro h1{margin:0;font:600 clamp(34px,5vw,54px)/1.02 "Space Grotesk",sans-serif;letter-spacing:-2.5px}.intro p{max-width:440px;margin:13px 0 0;color:var(--muted);font-size:14px;line-height:1.6}.connect-button,.load-button{border:0;border-radius:10px;background:var(--lime);color:#16210f;padding:11px 16px;font-size:12px;font-weight:700;cursor:pointer;transition:transform .15s,background .15s}.connect-button:hover,.load-button:hover{transform:translateY(-1px);background:#c9fb89}.connect-button:disabled,.load-button:disabled{cursor:not-allowed;opacity:.45;transform:none}.status-banner{display:none;align-items:flex-start;gap:12px;padding:14px 16px;margin-bottom:18px;border:1px solid #445238;border-radius:12px;background:#1e271a;color:#d6e8c4;font-size:12px;line-height:1.55}.status-banner.show{display:flex}.status-banner.error{border-color:#633c38;background:#2b1d1b;color:#ffd4cf}.status-symbol{color:var(--lime);font-size:16px}.status-banner.error .status-symbol{color:var(--red)}.filters{display:grid;grid-template-columns:1.25fr 1.35fr .9fr auto;align-items:end;gap:12px;padding:17px;border:1px solid var(--line);border-radius:var(--radius);background:#181b17;margin-bottom:22px}.field label{display:block;margin:0 0 7px 2px;color:#858d80;font-size:10px;font-weight:700;letter-spacing:1.1px;text-transform:uppercase}.field select,.field input{width:100%;min-height:42px;border:1px solid #343a32;border-radius:9px;background:#20241f;color:var(--text);padding:0 12px;font-size:12px}.load-button{min-height:42px;white-space:nowrap}.summary{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:0 2px 13px}.summary h2{margin:0;font:600 17px "Space Grotesk",sans-serif;letter-spacing:-.3px}.summary-meta{color:var(--muted);font-size:11px}.chart-card{overflow:hidden;border:1px solid var(--line);border-radius:var(--radius);background:#171a16}.chart-head{display:flex;align-items:center;justify-content:space-between;padding:17px 20px;border-bottom:1px solid var(--line)}.chart-title{font-size:13px;font-weight:600}.chart-date{color:var(--muted);font-size:11px}.table-scroll-hint{display:none;margin:0;padding:7px 16px;border-bottom:1px solid var(--line);color:var(--muted);font-size:10px}.table-scroll-hint.show{display:block}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:1380px}thead th{padding:12px 16px;color:#7f877a;text-align:left;font-size:9px;letter-spacing:1.1px;text-transform:uppercase;font-weight:700}tbody tr{border-top:1px solid #272c26}tbody tr:hover{background:#1d211b}tbody td{padding:10px 16px;font-size:12px}.rank{width:58px;color:#a9b19f;font:600 13px "Space Grotesk",sans-serif}.track-cell{display:flex;align-items:center;gap:12px;min-width:230px}.cover{width:38px;height:38px;border-radius:6px;background:#292e27;object-fit:cover;flex:none}.track-name{color:#f0f3ec;font-weight:600;text-decoration:none}.track-name:hover{color:var(--lime)}.artist-name{margin-top:4px;color:#92998d;font-size:10px}.metric{color:#c4ccbd;font-variant-numeric:tabular-nums}.movement-cell{font-variant-numeric:tabular-nums;white-space:nowrap}.movement-up{color:var(--lime);font-weight:700}.movement-down{color:var(--red);font-weight:700}.movement-same{color:var(--muted);font-weight:700}.movement-new{color:var(--muted)}.date-cell{color:#c4ccbd;white-space:nowrap;font-variant-numeric:tabular-nums}.empty{display:grid;place-items:center;min-height:240px;padding:32px;text-align:center}.empty-icon{display:grid;place-items:center;width:42px;height:42px;margin:0 auto 13px;border:1px solid #394233;border-radius:13px;background:#20271c;color:var(--lime);font-size:19px}.empty h3{margin:0 0 7px;font:600 16px "Space Grotesk",sans-serif}.empty p{max-width:390px;margin:0;color:var(--muted);font-size:12px;line-height:1.6}.footnote{margin-top:14px;color:#747c70;font-size:10px;line-height:1.5}.spinner{display:inline-block;width:13px;height:13px;margin-right:8px;border:2px solid #26341f;border-top-color:#17220f;border-radius:50%;vertical-align:-2px;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.mobile-nav{display:none}@media(max-width:900px){.shell{grid-template-columns:68px minmax(0,1fr)}.sidebar{align-items:center;padding:23px 9px}.brand{padding:0}.brand-name,.nav-label,.nav-text,.side-note{display:none}.nav-link{justify-content:center;width:44px;height:44px;padding:0}.main{padding:30px 24px 44px}.filters{grid-template-columns:1fr 1fr}.load-button{width:100%}}@media(max-width:600px){.shell{display:block}.sidebar{display:none}.main{padding:23px 16px 38px}.topline{margin-bottom:30px}.intro{display:block;margin-bottom:24px}.intro h1{font-size:38px}.intro p{font-size:13px}.connect-button{margin-top:17px}.filters{grid-template-columns:1fr 1fr;padding:13px}.filters .field:first-child{grid-column:span 2}.load-button{grid-column:span 2}.summary{align-items:flex-start;flex-direction:column;gap:5px}.chart-head{padding:15px}.account-state{font-size:10px}}
+      :root{color-scheme:dark;--bg:#111310;--panel:#191c18;--panel-2:#20241f;--line:#2c312a;--text:#f2f5ee;--muted:#92998d;--lime:#b8f26b;--lime-dark:#283b1d;--red:#ff817b;--radius:16px}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 18% -12%,#283520 0,transparent 36%),var(--bg);color:var(--text);font-family:"DM Sans",sans-serif;min-height:100vh}button,select,input{font:inherit}button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--lime);outline-offset:3px}.shell{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:100vh}.sidebar{border-right:1px solid var(--line);padding:28px 18px;display:flex;flex-direction:column;gap:38px}.brand{display:flex;align-items:center;gap:11px;padding:0 8px;font:700 17px "Space Grotesk",sans-serif;letter-spacing:-.5px}.brand-mark{width:31px;height:31px;display:grid;place-items:center;border-radius:10px;background:var(--lime);color:#14200d;font-size:15px}.nav-label{margin:0 10px 10px;color:#777e73;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase}.nav-link{display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:10px;color:#c7ccc2;text-decoration:none;font-size:13px}.nav-link.active{background:#262c22;color:var(--lime)}.nav-glyph{width:18px;text-align:center;font-size:15px}.side-note{margin-top:auto;padding:15px;border:1px solid var(--line);border-radius:13px;background:#171a16}.side-note strong{display:block;margin-bottom:6px;font-size:12px}.side-note p{margin:0;color:var(--muted);font-size:11px;line-height:1.55}.main{width:min(1250px,100%);padding:38px clamp(20px,5vw,64px) 56px;margin:0 auto}.topline{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:42px}.eyebrow{display:flex;align-items:center;gap:8px;color:var(--lime);font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase}.eyebrow::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--lime);box-shadow:0 0 14px #b8f26b99}.account-state{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:#c2c8bc;font-size:11px}.state-dot{width:7px;height:7px;border-radius:50%;background:#757c71}.state-dot.online{background:var(--lime);box-shadow:0 0 10px #b8f26b88}.intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:30px}.intro h1{margin:0;font:600 clamp(34px,5vw,54px)/1.02 "Space Grotesk",sans-serif;letter-spacing:-2.5px}.intro p{max-width:440px;margin:13px 0 0;color:var(--muted);font-size:14px;line-height:1.6}.connect-button,.load-button{border:0;border-radius:10px;background:var(--lime);color:#16210f;padding:11px 16px;font-size:12px;font-weight:700;cursor:pointer;transition:transform .15s,background .15s}.connect-button:hover,.load-button:hover{transform:translateY(-1px);background:#c9fb89}.connect-button:disabled,.load-button:disabled{cursor:not-allowed;opacity:.45;transform:none}.status-banner{display:none;align-items:flex-start;gap:12px;padding:14px 16px;margin-bottom:18px;border:1px solid #445238;border-radius:12px;background:#1e271a;color:#d6e8c4;font-size:12px;line-height:1.55}.status-banner.show{display:flex}.status-banner.error{border-color:#633c38;background:#2b1d1b;color:#ffd4cf}.status-symbol{color:var(--lime);font-size:16px}.status-banner.error .status-symbol{color:var(--red)}.filters{display:grid;grid-template-columns:1.25fr 1.35fr .9fr auto;align-items:end;gap:12px;padding:17px;border:1px solid var(--line);border-radius:var(--radius);background:#181b17;margin-bottom:22px}.field label{display:block;margin:0 0 7px 2px;color:#858d80;font-size:10px;font-weight:700;letter-spacing:1.1px;text-transform:uppercase}.field select,.field input{width:100%;min-height:42px;border:1px solid #343a32;border-radius:9px;background:#20241f;color:var(--text);padding:0 12px;font-size:12px}.load-button{min-height:42px;white-space:nowrap}.summary{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:0 2px 13px}.summary h2{margin:0;font:600 17px "Space Grotesk",sans-serif;letter-spacing:-.3px}.summary-meta{color:var(--muted);font-size:11px}.chart-card{overflow:hidden;border:1px solid var(--line);border-radius:var(--radius);background:#171a16}.chart-head{display:flex;align-items:center;justify-content:space-between;padding:17px 20px;border-bottom:1px solid var(--line)}.chart-title{font-size:13px;font-weight:600}.chart-date{color:var(--muted);font-size:11px}.table-scroll-hint{display:none;margin:0;padding:7px 16px;border-bottom:1px solid var(--line);color:var(--muted);font-size:10px}.table-scroll-hint.show{display:block}.history-status{margin:0;padding:10px 16px;border-bottom:1px solid var(--line);color:var(--muted);font-size:11px;line-height:1.5}.history-status[hidden]{display:none}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:1380px}thead th{padding:12px 16px;color:#7f877a;text-align:left;font-size:9px;letter-spacing:1.1px;text-transform:uppercase;font-weight:700}tbody tr{border-top:1px solid #272c26}tbody tr:hover{background:#1d211b}tbody td{padding:10px 16px;font-size:12px}.rank{width:58px;color:#a9b19f;font:600 13px "Space Grotesk",sans-serif}.track-cell{display:flex;align-items:center;gap:12px;min-width:230px}.cover{width:38px;height:38px;border-radius:6px;background:#292e27;object-fit:cover;flex:none}.track-name{color:#f0f3ec;font-weight:600;text-decoration:none}.track-name:hover{color:var(--lime)}.artist-name{margin-top:4px;color:#92998d;font-size:10px}.metric{color:#c4ccbd;font-variant-numeric:tabular-nums}.movement-cell{font-variant-numeric:tabular-nums;white-space:nowrap}.movement-up{color:var(--lime);font-weight:700}.movement-down{color:var(--red);font-weight:700}.movement-same{color:var(--muted);font-weight:700}.movement-new{color:var(--muted)}.date-cell{color:#c4ccbd;white-space:nowrap;font-variant-numeric:tabular-nums}.empty{display:grid;place-items:center;min-height:240px;padding:32px;text-align:center}.empty-icon{display:grid;place-items:center;width:42px;height:42px;margin:0 auto 13px;border:1px solid #394233;border-radius:13px;background:#20271c;color:var(--lime);font-size:19px}.empty h3{margin:0 0 7px;font:600 16px "Space Grotesk",sans-serif}.empty p{max-width:390px;margin:0;color:var(--muted);font-size:12px;line-height:1.6}.footnote{margin-top:14px;color:#747c70;font-size:10px;line-height:1.5}.spinner{display:inline-block;width:13px;height:13px;margin-right:8px;border:2px solid #26341f;border-top-color:#17220f;border-radius:50%;vertical-align:-2px;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.mobile-nav{display:none}@media(max-width:900px){.shell{grid-template-columns:68px minmax(0,1fr)}.sidebar{align-items:center;padding:23px 9px}.brand{padding:0}.brand-name,.nav-label,.nav-text,.side-note{display:none}.nav-link{justify-content:center;width:44px;height:44px;padding:0}.main{padding:30px 24px 44px}.filters{grid-template-columns:1fr 1fr}.load-button{width:100%}}@media(max-width:600px){.shell{display:block}.sidebar{display:none}.main{padding:23px 16px 38px}.topline{margin-bottom:30px}.intro{display:block;margin-bottom:24px}.intro h1{font-size:38px}.intro p{font-size:13px}.connect-button{margin-top:17px}.filters{grid-template-columns:1fr 1fr;padding:13px}.filters .field:first-child{grid-column:span 2}.load-button{grid-column:span 2}.summary{align-items:flex-start;flex-direction:column;gap:5px}.chart-head{padding:15px}.account-state{font-size:10px}}
     </style>
   </head>
   <body>
@@ -37,6 +37,7 @@
         <section class="chart-card" aria-label="Spotify chart results">
           <div class="chart-head"><span class="chart-title" id="chart-title">Chart preview</span><span class="chart-date" id="chart-date-label">No chart loaded</span></div>
           <p class="table-scroll-hint" id="table-scroll-hint" aria-live="polite">Swipe or scroll horizontally to see all chart columns.</p>
+          <p class="history-status" id="history-status" role="status" aria-live="polite" hidden></p>
           <div id="chart-content" class="empty"><div><span class="empty-icon" aria-hidden="true">♫</span><h3 id="empty-title">Connect your Spotify app</h3><p id="empty-copy">Add your Spotify app credentials to the project environment, connect your account, then load a live chart. No demo data is shown.</p></div></div>
         </section>
         <p class="footnote" id="date-help">Use “latest” or a chart date in YYYY-MM-DD format. Rankings are returned by Spotify Charts; historical availability varies by chart.</p>
@@ -45,6 +46,7 @@
     <script>
       const byId = (id) => document.getElementById(id);
       let appStatus = null;
+      let chartLoadSequence = 0;
       const authChannel = "BroadcastChannel" in window ? new BroadcastChannel("spotify-charts-auth") : null;
       const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
       function showBanner(message, isError = false) {
@@ -113,9 +115,71 @@
         if (["NEW", "NEW_ENTRY"].includes(stats.entryStatus)) return { label: "NEW", className: "movement-new", ariaLabel: "New chart entry" };
         return { label: "—", className: "movement-new", ariaLabel: "Movement unavailable" };
       }
+      function updateChartHistoryStatus(historyInfo) {
+        const status = byId("history-status");
+        if (!historyInfo) {
+          status.hidden = true;
+          status.textContent = "";
+          return;
+        }
+        status.hidden = false;
+        if (!historyInfo.supported) {
+          status.textContent = historyInfo.reason || "Cumulative chart streams are unavailable for this chart.";
+          return;
+        }
+        if (historyInfo.complete) {
+          status.textContent = `History complete through ${historyInfo.targetDate}. Totals include streams from chart appearances in this market only.`;
+        } else if (historyInfo.status === "paused") {
+          status.textContent = `Backfill paused: ${historyInfo.error || "Spotify history could not be loaded."} Reload the chart to resume.`;
+        } else {
+          status.textContent = `Backfilling chart history: ${Number(historyInfo.processedDates || 0).toLocaleString()} of ${Number(historyInfo.totalDates || 0).toLocaleString()} chart dates processed. Totals appear when complete.`;
+        }
+      }
+      function updateCumulativeTotals(totals) {
+        document.querySelectorAll("#chart-content tbody tr[data-track-uri]").forEach((row) => {
+          const cell = row.querySelector("[data-total-streams]");
+          if (cell) cell.textContent = Number(totals[row.dataset.trackUri] ?? 0).toLocaleString();
+        });
+      }
+      async function continueChartHistory(payload, requestId) {
+        const historyInfo = payload.chartHistory;
+        if (!historyInfo?.supported || historyInfo.complete) return;
+        const trackUris = (payload.entries || []).map((entry) => entry.trackMetadata?.trackUri).filter(Boolean);
+        if (!trackUris.length) return;
+        const body = JSON.stringify({
+          chart_type: byId("chart-type").value,
+          country: byId("country").value,
+          target_date: historyInfo.targetDate,
+          track_uris: trackUris,
+        });
+        while (requestId === chartLoadSequence) {
+          try {
+            const progress = await requestJson("/api/chart-history/backfill", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body,
+            });
+            if (requestId !== chartLoadSequence) return;
+            updateChartHistoryStatus(progress);
+            if (progress.complete) {
+              updateCumulativeTotals(progress.totals || {});
+              return;
+            }
+            if (progress.status === "paused" || progress.status === "unavailable") return;
+            await new Promise((resolve) => setTimeout(resolve, 1200));
+          } catch (error) {
+            if (requestId === chartLoadSequence) {
+              updateChartHistoryStatus({ ...historyInfo, status: "paused", error: error.message });
+              showBanner(error.message, true);
+            }
+            return;
+          }
+        }
+      }
       function renderChart(payload) {
         const metadata = payload.displayChart?.chartMetadata || {};
         const entries = payload.entries || [];
+        const historyInfo = payload.chartHistory;
         const date = payload.displayChart?.date || "Latest";
         const metricLabel = entries[0]?.chartEntryData?.rankingMetric?.type || "RANK";
         byId("chart-title").textContent = metadata.readableTitle || "Spotify chart";
@@ -125,6 +189,7 @@
         if (!entries.length) {
           byId("table-scroll-hint").classList.remove("show");
           byId("chart-content").className = "empty";
+          byId("history-status").hidden = true;
           byId("chart-content").innerHTML = '<div><span class="empty-icon" aria-hidden="true">–</span><h3>No entries returned</h3><p>Spotify returned a chart without any entries for this selection.</p></div>';
           return;
         }
@@ -137,13 +202,16 @@
           const image = meta.displayImageUri;
           const titleHtml = link ? `<a class="track-name" href="${escapeHtml(link)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>` : `<span class="track-name">${escapeHtml(title)}</span>`;
           const metric = stats.rankingMetric?.value ? Number(stats.rankingMetric.value).toLocaleString() : "—";
+          const totalStreams = !historyInfo?.supported ? "—" : historyInfo.complete ? Number(stats.cumulativeChartStreams ?? 0).toLocaleString() : historyInfo.status === "paused" ? "Paused" : "Backfilling…";
+          const trackUri = meta.trackUri || "";
           const movement = chartMovement(stats);
           const releaseDate = meta.releaseDate || "—";
-          return `<tr><td class="rank">${escapeHtml(stats.currentRank ?? "—")}</td><td class="movement-cell ${movement.className}" aria-label="${escapeHtml(movement.ariaLabel)}">${escapeHtml(movement.label)}</td><td><div class="track-cell">${image ? `<img class="cover" src="${escapeHtml(image)}" alt="" loading="lazy" />` : '<span class="cover" aria-hidden="true"></span>'}<div>${titleHtml}${artistNames ? `<div class="artist-name">${escapeHtml(artistNames)}</div>` : ""}</div></div></td><td class="metric">${escapeHtml(stats.peakRank ?? "—")}</td><td class="metric">${escapeHtml(stats.previousRank ?? "—")}</td><td class="metric">${escapeHtml(stats.consecutiveAppearancesOnChart ?? "—")}</td><td class="date-cell">${escapeHtml(releaseDate)}</td><td class="date-cell">${escapeHtml(stats.entryDate ?? "—")}</td><td class="metric">${escapeHtml(stats.entryRank ?? "—")}</td><td class="metric">${escapeHtml(stats.appearancesOnChart ?? "—")}</td><td class="metric">${escapeHtml(metric)}</td></tr>`;
+          return `<tr data-track-uri="${escapeHtml(trackUri)}"><td class="rank">${escapeHtml(stats.currentRank ?? "—")}</td><td class="movement-cell ${movement.className}" aria-label="${escapeHtml(movement.ariaLabel)}">${escapeHtml(movement.label)}</td><td><div class="track-cell">${image ? `<img class="cover" src="${escapeHtml(image)}" alt="" loading="lazy" />` : '<span class="cover" aria-hidden="true"></span>'}<div>${titleHtml}${artistNames ? `<div class="artist-name">${escapeHtml(artistNames)}</div>` : ""}</div></div></td><td class="metric">${escapeHtml(stats.peakRank ?? "—")}</td><td class="metric">${escapeHtml(stats.previousRank ?? "—")}</td><td class="metric">${escapeHtml(stats.consecutiveAppearancesOnChart ?? "—")}</td><td class="date-cell">${escapeHtml(releaseDate)}</td><td class="date-cell">${escapeHtml(stats.entryDate ?? "—")}</td><td class="metric">${escapeHtml(stats.entryRank ?? "—")}</td><td class="metric">${escapeHtml(stats.appearancesOnChart ?? "—")}</td><td class="metric">${escapeHtml(metric)}</td><td class="metric" data-total-streams>${escapeHtml(totalStreams)}</td></tr>`;
         }).join("");
         byId("chart-content").className = "table-wrap";
         const totalAppearancesLabel = metadata.recurrence === "WEEKLY" ? "Total weeks on chart" : "Total days on chart";
-        byId("chart-content").innerHTML = `<table><thead><tr><th scope="col">Rank</th><th scope="col">Movement</th><th scope="col">Entry</th><th scope="col">Peak</th><th scope="col">Prev</th><th scope="col">Streak</th><th scope="col">Release Date</th><th scope="col">First entry date</th><th scope="col">First entry position</th><th scope="col">${totalAppearancesLabel}</th><th scope="col">${escapeHtml(metricLabel)}</th></tr></thead><tbody>${rows}</tbody></table>`;
+        byId("chart-content").innerHTML = `<table><thead><tr><th scope="col">Rank</th><th scope="col">Movement</th><th scope="col">Entry</th><th scope="col">Peak</th><th scope="col">Prev</th><th scope="col">Streak</th><th scope="col">Release Date</th><th scope="col">First entry date</th><th scope="col">First entry position</th><th scope="col">${totalAppearancesLabel}</th><th scope="col">${escapeHtml(metricLabel)}</th><th scope="col" title="Sum of streams from every date this song appeared in this chart and market.">Total chart streams</th></tr></thead><tbody>${rows}</tbody></table>`;
+        updateChartHistoryStatus(historyInfo);
         updateTableScrollHint();
       }
       byId("connect-button").addEventListener("click", () => {
@@ -154,13 +222,17 @@
       });
       byId("chart-form").addEventListener("submit", async (event) => {
         event.preventDefault();
+        const requestId = ++chartLoadSequence;
         const button = byId("load-button");
         const params = new URLSearchParams({ type: byId("chart-type").value, country: byId("country").value, date: byId("chart-date").value.trim() || "latest" });
         button.disabled = true;
         button.innerHTML = '<span class="spinner" aria-hidden="true"></span>Loading';
         hideBanner();
         try {
-          renderChart(await requestJson(`/api/charts?${params}`));
+          const payload = await requestJson(`/api/charts?${params}`);
+          if (requestId !== chartLoadSequence) return;
+          renderChart(payload);
+          void continueChartHistory(payload, requestId);
         } catch (error) {
           showBanner(error.message, true);
         } finally {

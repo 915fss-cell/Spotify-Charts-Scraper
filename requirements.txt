@@ -1,4 +1,5 @@
 httpx
+asyncpg
 click
 pydantic
 pydantic-settings

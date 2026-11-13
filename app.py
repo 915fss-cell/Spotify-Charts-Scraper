@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
+import time
+from contextlib import asynccontextmanager
 from datetime import date as calendar_date
 from pathlib import Path
 from typing import Any
@@ -8,16 +11,42 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import Cookie, FastAPI, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from chart_history import (
+    ChartHistoryStorageError,
+    close_history_pool,
+    prepare_chart_history,
+    run_history_backfill_batch,
+)
 from Countries import Countries
 from Settings import SpotifySettings
 from spotify_charts import SpotifyCharts
 
 
-app = FastAPI(title="Spotify Charts", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    yield
+    await close_history_pool()
+
+
+app = FastAPI(title="Spotify Charts", docs_url=None, redoc_url=None, lifespan=lifespan)
 settings = SpotifySettings()
 refresh_token: str | None = None
+access_token: str | None = None
+access_token_expires_at = 0.0
+token_refresh_lock = asyncio.Lock()
+
+SONG_CHART_STEPS = {"daily_top_songs": 1, "weekly_top_songs": 7}
+
+
+class ChartHistoryBackfillRequest(BaseModel):
+    chart_type: str
+    country: str
+    target_date: calendar_date
+    track_uris: list[str] = Field(max_length=200)
+
 
 CHART_METHODS = {
     "daily_top_songs": "daily_top_songs",
@@ -52,6 +81,35 @@ def missing_configuration() -> list[str]:
     if not settings.client_secret:
         missing.append("SPOTIFY_CLIENT_SECRET")
     return missing
+
+
+async def get_spotify_scraper() -> SpotifyCharts:
+    global refresh_token, access_token, access_token_expires_at
+
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="Connect Spotify before loading charts.")
+
+    async with token_refresh_lock:
+        if access_token and time.monotonic() < access_token_expires_at - 60:
+            return SpotifyCharts(access_token=access_token)
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(
+                    "https://accounts.spotify.com/api/token",
+                    data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+                    auth=(settings.client_id or "", settings.client_secret or ""),
+                )
+                response.raise_for_status()
+                token_data = response.json()
+            access_token = token_data["access_token"]
+            refresh_token = token_data.get("refresh_token", refresh_token)
+            access_token_expires_at = time.monotonic() + max(60, int(token_data.get("expires_in", 3600)))
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=502, detail="Spotify returned an unexpected token response.") from error
+        except httpx.HTTPError as error:
+            raise HTTPException(status_code=502, detail="Spotify could not refresh authorization. Reconnect and try again.") from error
+
+    return SpotifyCharts(access_token=access_token)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -114,7 +172,7 @@ async def oauth_callback(
     error: str | None = None,
     oauth_state: str | None = Cookie(default=None, alias="spotify_oauth_state"),
 ):
-    global refresh_token
+    global refresh_token, access_token, access_token_expires_at
 
     if error or not code or not state or not oauth_state or not secrets.compare_digest(state, oauth_state):
         response = RedirectResponse("/?auth=error", status_code=303)
@@ -135,6 +193,8 @@ async def oauth_callback(
             response.raise_for_status()
             token_data = response.json()
         refresh_token = token_data.get("refresh_token")
+        access_token = None
+        access_token_expires_at = 0.0
         if not refresh_token:
             response = RedirectResponse("/?auth=error", status_code=303)
             response.delete_cookie("spotify_oauth_state", path="/oauth/callback")
@@ -151,8 +211,10 @@ async def oauth_callback(
 
 @app.post("/api/disconnect")
 async def disconnect() -> dict[str, bool]:
-    global refresh_token
+    global refresh_token, access_token, access_token_expires_at
     refresh_token = None
+    access_token = None
+    access_token_expires_at = 0.0
     return {"connected": False}
 
 
@@ -162,8 +224,6 @@ async def chart(
     country: str = Query("GLOBAL", min_length=2, max_length=6),
     date: str = Query("latest", min_length=1, max_length=10),
 ) -> dict[str, Any]:
-    global refresh_token
-
     if chart_type not in CHART_METHODS:
         raise HTTPException(status_code=400, detail="Choose a supported chart type.")
     if country.upper() not in {item.value for item in Countries}:
@@ -173,21 +233,9 @@ async def chart(
             calendar_date.fromisoformat(date)
         except ValueError as error:
             raise HTTPException(status_code=400, detail="Date must be latest or YYYY-MM-DD.") from error
-    if not refresh_token:
-        raise HTTPException(status_code=401, detail="Connect Spotify before loading charts.")
 
+    scraper = await get_spotify_scraper()
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(
-                "https://accounts.spotify.com/api/token",
-                data={"grant_type": "refresh_token", "refresh_token": refresh_token},
-                auth=(settings.client_id or "", settings.client_secret or ""),
-            )
-            response.raise_for_status()
-            token_data = response.json()
-        refresh_token = token_data.get("refresh_token", refresh_token)
-        access_token = token_data["access_token"]
-        scraper = SpotifyCharts(access_token=access_token)
         result = await getattr(scraper, CHART_METHODS[chart_type])(country.upper(), date)
     except KeyError as error:
         raise HTTPException(status_code=502, detail="Spotify returned an unexpected chart response.") from error
@@ -196,4 +244,41 @@ async def chart(
 
     if not isinstance(result, dict) or not isinstance(result.get("entries"), list):
         raise HTTPException(status_code=502, detail="Spotify returned an unsupported chart format.")
+
+    try:
+        result["chartHistory"] = await prepare_chart_history(chart_type, country.upper(), date, result)
+    except ChartHistoryStorageError:
+        result["chartHistory"] = {
+            "supported": False,
+            "complete": False,
+            "status": "unavailable",
+            "reason": "Historical storage is unavailable; cumulative totals cannot be calculated right now.",
+        }
     return result
+
+
+@app.post("/api/chart-history/backfill")
+async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[str, Any]:
+    chart_type = request.chart_type
+    country = request.country.upper()
+    if chart_type not in SONG_CHART_STEPS:
+        raise HTTPException(status_code=400, detail="Choose a Top Songs chart to backfill stream history.")
+    if country not in {item.value for item in Countries}:
+        raise HTTPException(status_code=400, detail="Choose a country from the list.")
+
+    track_uris = list(dict.fromkeys(request.track_uris))
+    if len(track_uris) > 200 or any(
+        not uri.startswith("spotify:track:") or len(uri) > 128 for uri in track_uris
+    ):
+        raise HTTPException(status_code=400, detail="The chart track list is invalid.")
+
+    try:
+        return await run_history_backfill_batch(
+            chart_type,
+            country,
+            request.target_date,
+            track_uris,
+            get_spotify_scraper,
+        )
+    except ChartHistoryStorageError as error:
+        raise HTTPException(status_code=503, detail="Historical storage is unavailable.") from error
