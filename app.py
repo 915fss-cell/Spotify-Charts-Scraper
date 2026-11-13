@@ -290,6 +290,43 @@ async def search_entities(
         raise HTTPException(status_code=502, detail="Spotify could not complete this search. Try again shortly.") from error
 
 
+@app.get("/api/artist/resolve")
+async def resolve_artist_link(
+    artist_link: str = Query(..., min_length=22, max_length=2048),
+) -> dict[str, Any]:
+    require_spotify_connection()
+    value = artist_link.strip()
+    if value.startswith("spotify:artist:"):
+        artist_id = value.removeprefix("spotify:artist:")
+    else:
+        parsed = urlsplit(value)
+        path_parts = parsed.path.strip("/").split("/")
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "open.spotify.com"
+            or len(path_parts) != 2
+            or path_parts[0] != "artist"
+        ):
+            raise HTTPException(status_code=400, detail="Paste a Spotify artist profile link or artist URI.")
+        artist_id = path_parts[1]
+
+    if len(artist_id) != 22 or not artist_id.isascii() or not artist_id.isalnum():
+        raise HTTPException(status_code=400, detail="That Spotify artist link does not contain a valid artist ID.")
+
+    scraper = await get_spotify_scraper()
+    try:
+        artist = await scraper.get_artist_profile(artist_id)
+        return {"artist": artist}
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Spotify could not find that artist.") from error
+        if error.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="Spotify is rate-limiting artist lookups. Try again shortly.") from error
+        raise HTTPException(status_code=502, detail="Spotify could not load that artist. Try again shortly.") from error
+    except (httpx.HTTPError, ValueError) as error:
+        raise HTTPException(status_code=502, detail="Spotify could not load that artist. Try again shortly.") from error
+
+
 @app.get("/api/selected/live")
 async def selected_live(
     country: str = Query("GLOBAL", min_length=2, max_length=6),

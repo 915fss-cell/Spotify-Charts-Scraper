@@ -19,6 +19,11 @@
   .history-trend{padding:7px 11px;white-space:nowrap}
   @media(max-width:900px){.live-controls,.history-controls{grid-template-columns:repeat(2,minmax(0,1fr))}}
   @media(max-width:560px){.live-controls,.history-controls{grid-template-columns:1fr}}
+  .artist-link-form{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:12px;margin:14px 0;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+  .artist-selection-actions{display:flex;align-items:center;gap:10px;margin:-2px 0 14px}
+  .artist-selection-actions[hidden]{display:none!important}
+  .artist-selection-label{flex:1;color:var(--muted);font-size:13px}
+  @media(max-width:560px){.artist-link-form{grid-template-columns:1fr}.artist-selection-actions{align-items:stretch;flex-direction:column}}
   </style>
   </head>
   <body>
@@ -67,6 +72,15 @@
           <div class="field"><label for="live-filter">Filter chart results</label><input id="live-filter" type="search" placeholder="Song, artist, or Spotify URI" autocomplete="off" /></div>
           <button class="load-button" id="live-refresh" type="submit">Load full charts</button>
         </form>
+        <form class="artist-link-form" id="artist-link-form">
+          <div class="field"><label for="artist-link">Filter by Spotify artist link</label><input id="artist-link" name="artist_link" type="text" placeholder="https://open.spotify.com/artist/…" autocomplete="url" required /></div>
+          <button class="quiet-button" id="artist-link-submit" type="submit">Load artist songs</button>
+        </form>
+        <div class="artist-selection-actions" id="artist-selection-actions" hidden>
+          <span class="artist-selection-label" id="artist-selection-label"></span>
+          <button class="quiet-button" id="artist-history-button" type="button">View artist history</button>
+          <button class="quiet-button" id="artist-clear-button" type="button">Clear artist</button>
+        </div>
         <p class="page-status" id="live-status" role="status" aria-live="polite">Connect Spotify to load full chart results.</p>
         <div class="selected-grid">
           <section class="chart-card selected-card" aria-labelledby="live-songs-title">

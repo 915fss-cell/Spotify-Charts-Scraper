@@ -159,6 +159,26 @@ class SpotifyCharts:
 
         return sorted(results, key=lambda item: item["popularity"], reverse=True)[:limit]
 
+    async def get_artist_profile(self, artist_id: str) -> dict:
+        async with AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"https://api.spotify.com/v1/artists/{artist_id}",
+                headers=self.headers,
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        if not isinstance(payload, dict) or not isinstance(payload.get("name"), str):
+            raise ValueError("Spotify returned an unexpected artist response.")
+
+        images = payload.get("images") or []
+        return {
+            "entityUri": f"spotify:artist:{artist_id}",
+            "entityName": payload["name"],
+            "spotifyUrl": (payload.get("external_urls") or {}).get("spotify"),
+            "imageUrl": images[0].get("url") if images and isinstance(images[0], dict) else None,
+        }
+
     async def daily_top_songs(self, country_code: str, date_: str = "latest") -> dict:
         """
         :param country_code: Country code of the country eg. IN -> India

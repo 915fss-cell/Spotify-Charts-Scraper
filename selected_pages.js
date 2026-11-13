@@ -15,6 +15,7 @@
   let historyChart = null;
   let historyData = null;
   let historyTrendData = null;
+  let activeArtist = null;
   let liveRequest = 0;
   let activePage = "charts";
   let connectionRefreshInFlight = false;
@@ -42,12 +43,21 @@
     return item.entityName || "Untitled";
   }
 
+  function matchesActiveArtist(item, type) {
+    if (!activeArtist) return true;
+    if (type === "track") {
+      return (item.artistNames || "").split(/\s*,\s*/).some((name) => name.toLocaleLowerCase() === activeArtist.entityName.toLocaleLowerCase());
+    }
+    return item.entityName.toLocaleLowerCase() === activeArtist.entityName.toLocaleLowerCase();
+  }
+
   function renderLiveGroup(type, items) {
     const container = byId(type === "track" ? "live-songs" : "live-artists");
     const count = byId(type === "track" ? "live-songs-count" : "live-artists-count");
     const query = byId("live-filter").value.trim().toLocaleLowerCase();
-    const filtered = items.filter((item) => `${item.entityName} ${item.artistNames} ${item.entityUri}`.toLocaleLowerCase().includes(query));
-    count.textContent = query ? `${filtered.length} of ${items.length} results` : `${items.length} chart entries`;
+    const filtered = items.filter((item) => matchesActiveArtist(item, type) && `${item.entityName} ${item.artistNames} ${item.entityUri}`.toLocaleLowerCase().includes(query));
+    const resultLabel = type === "track" ? "song" : "artist";
+    count.textContent = activeArtist ? `${filtered.length} matching ${resultLabel}${filtered.length === 1 ? "" : "s"}` : query ? `${filtered.length} of ${items.length} results` : `${items.length} chart entries`;
     if (!items.length) {
       container.innerHTML = '<p class="entity-empty">No entries were returned for this chart.</p>';
       return;
@@ -93,7 +103,12 @@
       renderLiveGroup("track", liveData.songs);
       renderLiveGroup("artist", liveData.artists);
       const total = liveData.songs.length + liveData.artists.length;
-      setStatus("live-status", `${total.toLocaleString()} chart entries loaded for ${payload.country}. Full snapshots are saved to History when available.`);
+      if (activeArtist) {
+        const matchingSongs = liveData.songs.filter((item) => matchesActiveArtist(item, "track")).length;
+        setStatus("live-status", `${activeArtist.entityName}: ${matchingSongs.toLocaleString()} matching song${matchingSongs === 1 ? "" : "s"} in the ${payload.country} ${payload.cadence} chart. Full snapshots are saved to History when available.`);
+      } else {
+        setStatus("live-status", `${total.toLocaleString()} chart entries loaded for ${payload.country}. Full snapshots are saved to History when available.`);
+      }
     } catch (error) {
       if (requestId === liveRequest) setStatus("live-status", error.message, true);
     } finally {
@@ -160,6 +175,31 @@
     if (!document.hidden) refreshAfterConnection();
   });
   window.addEventListener("focus", refreshAfterConnection);
+
+  async function loadArtistCharts(event) {
+    event.preventDefault();
+    const input = byId("artist-link");
+    const button = byId("artist-link-submit");
+    const artistLink = input.value.trim();
+    if (!artistLink) return;
+    button.disabled = true;
+    button.textContent = "Loading…";
+    setStatus("live-status", "Resolving artist profile…");
+    try {
+      const params = new URLSearchParams({ artist_link: artistLink });
+      const payload = await requestJson(`/api/artist/resolve?${params}`);
+      activeArtist = payload.artist;
+      byId("live-filter").value = "";
+      byId("artist-selection-label").textContent = `${activeArtist.entityName} · showing songs credited to this artist`;
+      byId("artist-selection-actions").hidden = false;
+      await loadLiveData();
+    } catch (error) {
+      setStatus("live-status", error.message, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Load artist songs";
+    }
+  }
 
   async function searchSpotify(event) {
     event.preventDefault();
@@ -434,6 +474,22 @@
   byId("selection-list").addEventListener("click", (event) => {
     const button = event.target.closest("[data-remove-uri]");
     if (button) removeSelection(button.dataset.removeUri);
+  });
+  byId("artist-link-form").addEventListener("submit", loadArtistCharts);
+  byId("artist-history-button").addEventListener("click", () => {
+    if (!activeArtist) return;
+    byId("history-country").value = byId("live-country").value;
+    byId("history-type").value = byId("live-cadence").value === "weekly" ? "weekly_top_songs" : "daily_top_songs";
+    byId("history-filter").value = activeArtist.entityName;
+    location.hash = "#history";
+  });
+  byId("artist-clear-button").addEventListener("click", () => {
+    activeArtist = null;
+    byId("artist-selection-actions").hidden = true;
+    byId("artist-link").value = "";
+    renderLiveGroup("track", liveData.songs);
+    renderLiveGroup("artist", liveData.artists);
+    setStatus("live-status", "Artist filter cleared. Full chart results are shown.");
   });
   byId("live-controls").addEventListener("submit", (event) => {
     event.preventDefault();
