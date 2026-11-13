@@ -30,6 +30,15 @@ from spotify_charts import SpotifyCharts
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global refresh_token
+    try:
+        pool = await get_history_pool()
+        row = await pool.fetchrow(
+            "SELECT refresh_token FROM public.spotify_oauth_tokens WHERE singleton = true"
+        )
+        refresh_token = row["refresh_token"] if row else None
+    except Exception as error:
+        print(f"[v0] Spotify authorization could not be restored: {type(error).__name__}")
     yield
     await close_history_pool()
 
@@ -40,6 +49,24 @@ refresh_token: str | None = None
 access_token: str | None = None
 access_token_expires_at = 0.0
 token_refresh_lock = asyncio.Lock()
+
+
+async def store_spotify_refresh_token(token: str) -> None:
+    pool = await get_history_pool()
+    await pool.execute(
+        """
+        INSERT INTO public.spotify_oauth_tokens (singleton, refresh_token, updated_at)
+        VALUES (true, $1, now())
+        ON CONFLICT (singleton) DO UPDATE
+        SET refresh_token = EXCLUDED.refresh_token, updated_at = now()
+        """,
+        token,
+    )
+
+
+async def remove_spotify_refresh_token() -> None:
+    pool = await get_history_pool()
+    await pool.execute("DELETE FROM public.spotify_oauth_tokens WHERE singleton = true")
 
 HISTORY_CHART_TYPES = {
     "daily_top_songs": "track",
@@ -123,28 +150,51 @@ def require_spotify_connection() -> None:
 async def get_spotify_scraper() -> SpotifyCharts:
     global refresh_token, access_token, access_token_expires_at
 
-    if not refresh_token:
-        raise HTTPException(status_code=401, detail="Connect Spotify before loading charts.")
-
     async with token_refresh_lock:
         if access_token and time.monotonic() < access_token_expires_at - 60:
             return SpotifyCharts(access_token=access_token)
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                response = await client.post(
-                    "https://accounts.spotify.com/api/token",
-                    data={"grant_type": "refresh_token", "refresh_token": refresh_token},
-                    auth=(settings.client_id or "", settings.client_secret or ""),
-                )
-                response.raise_for_status()
-                token_data = response.json()
-            access_token = token_data["access_token"]
-            refresh_token = token_data.get("refresh_token", refresh_token)
-            access_token_expires_at = time.monotonic() + max(60, int(token_data.get("expires_in", 3600)))
+            pool = await get_history_pool()
+            async with pool.acquire() as connection:
+                async with connection.transaction():
+                    row = await connection.fetchrow(
+                        "SELECT refresh_token FROM public.spotify_oauth_tokens WHERE singleton = true FOR UPDATE"
+                    )
+                    if not row:
+                        refresh_token = None
+                        raise HTTPException(status_code=401, detail="Connect Spotify before loading charts.")
+                    current_refresh_token = row["refresh_token"]
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        response = await client.post(
+                            "https://accounts.spotify.com/api/token",
+                            data={"grant_type": "refresh_token", "refresh_token": current_refresh_token},
+                            auth=(settings.client_id or "", settings.client_secret or ""),
+                        )
+                        response.raise_for_status()
+                        token_data = response.json()
+                    next_refresh_token = token_data.get("refresh_token", current_refresh_token)
+                    if not isinstance(next_refresh_token, str) or not next_refresh_token:
+                        raise ValueError("Spotify returned an invalid refresh token.")
+                    if next_refresh_token != current_refresh_token:
+                        await connection.execute(
+                            """
+                            UPDATE public.spotify_oauth_tokens
+                            SET refresh_token = $1, updated_at = now()
+                            WHERE singleton = true
+                            """,
+                            next_refresh_token,
+                        )
+                    access_token = token_data["access_token"]
+                    refresh_token = next_refresh_token
+                    access_token_expires_at = time.monotonic() + max(60, int(token_data.get("expires_in", 3600)))
+        except HTTPException:
+            raise
         except (KeyError, TypeError, ValueError) as error:
             raise HTTPException(status_code=502, detail="Spotify returned an unexpected token response.") from error
         except httpx.HTTPError as error:
             raise HTTPException(status_code=502, detail="Spotify could not refresh authorization. Reconnect and try again.") from error
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Spotify authorization storage is temporarily unavailable.") from error
 
     return SpotifyCharts(access_token=access_token)
 
@@ -836,14 +886,16 @@ async def oauth_callback(
             )
             response.raise_for_status()
             token_data = response.json()
-        refresh_token = token_data.get("refresh_token")
-        access_token = None
-        access_token_expires_at = 0.0
-        if not refresh_token:
+        new_refresh_token = token_data.get("refresh_token")
+        if not isinstance(new_refresh_token, str) or not new_refresh_token:
             response = RedirectResponse("/?auth=error", status_code=303)
             response.delete_cookie("spotify_oauth_state", path="/oauth/callback")
             return response
-    except (httpx.HTTPError, ValueError):
+        await store_spotify_refresh_token(new_refresh_token)
+        refresh_token = new_refresh_token
+        access_token = None
+        access_token_expires_at = 0.0
+    except Exception:
         response = RedirectResponse("/?auth=error", status_code=303)
         response.delete_cookie("spotify_oauth_state", path="/oauth/callback")
         return response
@@ -856,6 +908,10 @@ async def oauth_callback(
 @app.post("/api/disconnect")
 async def disconnect() -> dict[str, bool]:
     global refresh_token, access_token, access_token_expires_at
+    try:
+        await remove_spotify_refresh_token()
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Spotify authorization could not be removed from storage.") from error
     refresh_token = None
     access_token = None
     access_token_expires_at = 0.0
