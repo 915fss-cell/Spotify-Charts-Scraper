@@ -11,7 +11,10 @@
   };
   let selections = [];
   let searchResults = [];
+  let liveData = { songs: [], artists: [] };
   let historyChart = null;
+  let historyData = null;
+  let historyTrendData = null;
   let liveRequest = 0;
   let activePage = "charts";
   let connectionRefreshInFlight = false;
@@ -42,29 +45,33 @@
   function renderLiveGroup(type, items) {
     const container = byId(type === "track" ? "live-songs" : "live-artists");
     const count = byId(type === "track" ? "live-songs-count" : "live-artists-count");
-    count.textContent = `${items.length} followed`;
+    const query = byId("live-filter").value.trim().toLocaleLowerCase();
+    const filtered = items.filter((item) => `${item.entityName} ${item.artistNames} ${item.entityUri}`.toLocaleLowerCase().includes(query));
+    count.textContent = query ? `${filtered.length} of ${items.length} results` : `${items.length} chart entries`;
     if (!items.length) {
-      container.innerHTML = '<p class="entity-empty">No selections yet. Use Manage selection to add songs or artists.</p>';
+      container.innerHTML = '<p class="entity-empty">No entries were returned for this chart.</p>';
+      return;
+    }
+    if (!filtered.length) {
+      container.innerHTML = '<p class="entity-empty">No chart entries match this filter.</p>';
       return;
     }
 
-    container.innerHTML = items.map((item) => {
+    container.innerHTML = filtered.map((item) => {
       const url = spotifyUrl(item.entityUri);
       const title = escapeHtml(entityName(item));
       const link = url
         ? `<a class="entity-title" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${title}</a>`
         : `<span class="entity-title">${title}</span>`;
-      const subtitle = item.artistNames || (item.inChart ? "In the latest chart" : "Not in the latest chart");
+      const subtitle = item.artistNames || (type === "track" ? "Song" : "Artist");
       const metricValue = item.metricValue == null ? null : String(item.metricValue);
       const numericMetric = metricValue == null ? Number.NaN : Number(metricValue.replaceAll(",", ""));
       const formattedMetric = Number.isFinite(numericMetric) ? numericMetric.toLocaleString() : metricValue;
       const metric = formattedMetric != null
         ? `${escapeHtml(formattedMetric)} ${escapeHtml(item.metricType || "")}`
         : "No metric returned";
-      const rank = item.inChart && item.chartRank != null ? `#${escapeHtml(item.chartRank)}` : "—";
-      const kind = type === "track" ? "songs" : "artists";
-      const removeButton = `<button class="selection-action remove entity-remove" type="button" data-live-remove-uri="${escapeHtml(item.entityUri)}" aria-label="Remove ${title} from selected ${kind}">Remove</button>`;
-      return `<article class="entity-row">${artwork(item.imageUrl, item.entityName)}<div class="entity-copy">${link}<div class="entity-subtitle">${escapeHtml(subtitle)}</div></div><div class="entity-metrics"><div class="entity-rank">${rank}</div><div class="entity-streams">${item.inChart ? metric : "Outside current chart"}</div>${removeButton}</div></article>`;
+      const rank = item.chartRank != null ? `#${escapeHtml(item.chartRank)}` : "—";
+      return `<article class="entity-row">${artwork(item.imageUrl, item.entityName)}<div class="entity-copy">${link}<div class="entity-subtitle">${escapeHtml(subtitle)}</div></div><div class="entity-metrics"><div class="entity-rank">${rank}</div><div class="entity-streams">${metric}</div></div></article>`;
     }).join("");
   }
 
@@ -82,13 +89,11 @@
     try {
       const payload = await requestJson(`/api/selected/live?${params}`);
       if (requestId !== liveRequest) return;
-      renderLiveGroup("track", payload.songs || []);
-      renderLiveGroup("artist", payload.artists || []);
-      const total = (payload.songs || []).length + (payload.artists || []).length;
-      const hasCurrent = [...(payload.songs || []), ...(payload.artists || [])].some((item) => item.inChart);
-      setStatus("live-status", total
-        ? `${hasCurrent ? "Latest chart data loaded" : "No selected entities are in this chart"}. Current snapshots are saved to history when available.`
-        : "Add songs or artists to your watchlist to get started.");
+      liveData = { songs: payload.songs || [], artists: payload.artists || [] };
+      renderLiveGroup("track", liveData.songs);
+      renderLiveGroup("artist", liveData.artists);
+      const total = liveData.songs.length + liveData.artists.length;
+      setStatus("live-status", `${total.toLocaleString()} chart entries loaded for ${payload.country}. Full snapshots are saved to History when available.`);
     } catch (error) {
       if (requestId === liveRequest) setStatus("live-status", error.message, true);
     } finally {
@@ -118,26 +123,6 @@
     byId("selection-results").innerHTML = searchResults.length
       ? searchResults.map((item) => renderSelectionRow(item, false)).join("")
       : '<p class="selection-empty">Search results will appear here.</p>';
-    populateHistoryEntities();
-  }
-
-  function currentHistoryType() {
-    return historyTypes[byId("history-type").value] || "track";
-  }
-
-  function populateHistoryEntities() {
-    const type = currentHistoryType();
-    const options = selections.filter((item) => item.entityType === type);
-    byId("history-backfill").disabled = options.length === 0;
-    const select = byId("history-entity");
-    const previousValue = select.value;
-    select.innerHTML = options.length
-      ? options.map((item) => `<option value="${escapeHtml(item.entityUri)}">${escapeHtml(entityName(item))}</option>`).join("")
-      : `<option value="">No selected ${type === "track" ? "songs" : "artists"}</option>`;
-    if (options.some((item) => item.entityUri === previousValue)) select.value = previousValue;
-    const streamsOption = byId("history-metric").querySelector('option[value="streams"]');
-    streamsOption.disabled = type === "artist";
-    if (type === "artist" && byId("history-metric").value === "streams") byId("history-metric").value = "rank";
   }
 
   async function loadSelections() {
@@ -162,7 +147,7 @@
       if (activePage === "history") await loadHistory();
     } catch (error) {
       if (activePage === "live") setStatus("live-status", error.message, true);
-      if (activePage === "history") setStatus("history-status", error.message, true);
+      if (activePage === "history") setStatus("selected-history-status", error.message, true);
     } finally {
       connectionRefreshInFlight = false;
     }
@@ -219,7 +204,7 @@
       await loadSelections();
       renderSelections();
       setStatus("selection-status", `${entityName(item)} added to your saved selection.`);
-      if (location.hash === "#live") setStatus("live-status", "Selection saved. Refresh live data to update its current chart position.");
+      if (location.hash === "#live") setStatus("live-status", "Saved to your watchlist. The full chart results remain unchanged.");
     } catch (error) {
       setStatus("selection-status", error.message, true);
     }
@@ -233,32 +218,41 @@
       renderSelections();
       const message = `${entityName(item || {})} removed from your selection. Existing snapshots are retained.`;
       setStatus("selection-status", message);
-      if (location.hash === "#live") {
-        liveRequest += 1;
-        const refreshButton = byId("live-refresh");
-        refreshButton.disabled = false;
-        refreshButton.textContent = "Refresh live data";
-        renderLiveGroup("track", selections.filter((selection) => selection.entityType === "track").map((selection) => ({ ...selection, inChart: false })));
-        renderLiveGroup("artist", selections.filter((selection) => selection.entityType === "artist").map((selection) => ({ ...selection, inChart: false })));
-        setStatus("live-status", message);
-      }
+      if (location.hash === "#live") setStatus("live-status", "Watchlist updated. Full chart results remain available.");
     } catch (error) {
       setStatus("selection-status", error.message, true);
       if (location.hash === "#live") setStatus("live-status", error.message, true);
     }
   }
 
-  function renderHistoryTable(points, metric) {
-    const rows = [...points].reverse().slice(0, 12);
-    if (!rows.length) {
-      byId("history-table").innerHTML = '<p class="entity-empty">No snapshots are available for this selection and market yet.</p>';
+  function renderHistoryTable(points = historyData?.points || []) {
+    const query = byId("history-filter").value.trim().toLocaleLowerCase();
+    const filtered = points.filter((point) => `${point.entityName} ${point.artistNames} ${point.entityUri}`.toLocaleLowerCase().includes(query));
+    const rows = filtered.slice(0, 200);
+    if (!filtered.length) {
+      byId("history-table").innerHTML = '<p class="entity-empty">No saved chart entries match this filter.</p>';
       return;
     }
-    const metricLabel = metric === "rank" ? "Chart rank" : "Chart streams";
-    byId("history-table").innerHTML = `<table><thead><tr><th scope="col">Chart date</th><th scope="col">${metricLabel}</th><th scope="col">Rank</th><th scope="col">Streams</th></tr></thead><tbody>${rows.map((point) => `<tr><td>${escapeHtml(point.chartDate)}</td><td>${metric === "rank" ? escapeHtml(point.chartRank ?? "—") : escapeHtml(point.streamCount == null ? "—" : Number(point.streamCount).toLocaleString())}</td><td>${escapeHtml(point.chartRank ?? "—")}</td><td>${escapeHtml(point.streamCount == null ? "—" : Number(point.streamCount).toLocaleString())}</td></tr>`).join("")}</tbody></table>`;
+    byId("history-table").innerHTML = `<table><thead><tr><th scope="col">Song or artist</th><th scope="col">Latest chart date</th><th scope="col">Rank</th><th scope="col">Streams</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${rows.map((point) => `<tr><td>${escapeHtml(point.entityName)}${point.artistNames ? `<span class="entity-subtitle">${escapeHtml(point.artistNames)}</span>` : ""}</td><td>${escapeHtml(point.chartDate)}</td><td>${escapeHtml(point.chartRank ?? "—")}</td><td>${escapeHtml(point.streamCount == null ? "—" : Number(point.streamCount).toLocaleString())}</td><td><button class="quiet-button history-trend" type="button" data-history-uri="${escapeHtml(point.entityUri)}" aria-label="View history for ${escapeHtml(point.entityName)}">View trend</button></td></tr>`).join("")}</tbody></table>${filtered.length > rows.length ? `<p class="entity-empty">Showing ${rows.length} of ${filtered.length} matching results.</p>` : ""}`;
   }
 
   function renderHistory(payload) {
+    historyData = payload;
+    historyTrendData = null;
+    if (historyChart) {
+      historyChart.destroy();
+      historyChart = null;
+    }
+    byId("history-chart").hidden = true;
+    byId("history-empty").hidden = false;
+    byId("history-empty").textContent = "Choose any result below to view its history trend.";
+    byId("history-chart-title").textContent = "Chart history";
+    byId("history-chart-range").textContent = `${(payload.points || []).length} latest results · ${payload.country}`;
+    renderHistoryTable(payload.points || []);
+    setStatus("selected-history-status", `${(payload.points || []).length.toLocaleString()} latest chart results loaded. Filter the results, then open a trend.`);
+  }
+
+  function renderHistoryTrend(payload) {
     const points = payload.points || [];
     const metric = byId("history-metric").value;
     const entity = payload.entity;
@@ -312,62 +306,68 @@
     }
     byId("history-chart-title").textContent = entity ? `${entity.entityName} · ${metric === "rank" ? "chart rank" : "chart streams"}` : "Chart history";
     byId("history-chart-range").textContent = points.length ? `${points.length} snapshots · ${payload.country}` : "No data loaded";
-    renderHistoryTable(points, metric);
-    if (!entity) setStatus("history-status", "Add a song or artist matching this chart type, then load live data to begin collecting history.");
-    else if (!points.length) setStatus("history-status", `No stored snapshots for ${entity.entityName} in this market yet. Refresh Live selected to collect the latest snapshot.`);
-    else setStatus("history-status", `${points.length} stored chart snapshots for ${entity.entityName}.`);
+    if (!points.length) empty.textContent = "No snapshots were found for this result in the selected date range.";
+    setStatus("selected-history-status", entity ? `${points.length} stored chart snapshots for ${entity.entityName}.` : "Choose a result to view its trend.");
+  }
+
+  async function viewHistoryTrend(entityUri) {
+    const params = new URLSearchParams({
+      chart_type: byId("history-type").value,
+      country: byId("history-country").value || "GLOBAL",
+      entity_uri: entityUri,
+      range: byId("history-range").value,
+    });
+    setStatus("selected-history-status", "Loading this chart entry’s history…");
+    try {
+      historyTrendData = await requestJson(`/api/selected/history?${params}`);
+      renderHistoryTrend(historyTrendData);
+    } catch (error) {
+      setStatus("selected-history-status", error.message, true);
+    }
+  }
+
+  function updateHistoryMetric() {
+    const isArtist = historyTypes[byId("history-type").value] === "artist";
+    const streamsOption = byId("history-metric").querySelector('option[value="streams"]');
+    streamsOption.disabled = isArtist;
+    if (isArtist && byId("history-metric").value === "streams") byId("history-metric").value = "rank";
   }
 
   async function loadHistory() {
-    const chartType = byId("history-type").value;
-    const entityUri = byId("history-entity").value;
-    if (!entityUri) {
-      renderHistory({ entity: null, points: [], country: byId("history-country").value });
-      return;
-    }
-    setStatus("history-status", "Loading stored snapshots…");
+    setStatus("selected-history-status", "Loading all saved chart results…");
     const params = new URLSearchParams({
-      chart_type: chartType,
+      chart_type: byId("history-type").value,
       country: byId("history-country").value || "GLOBAL",
-      entity_uri: entityUri,
       range: byId("history-range").value,
     });
     try {
       const payload = await requestJson(`/api/selected/history?${params}`);
       renderHistory(payload);
     } catch (error) {
-      setStatus("history-status", error.message, true);
+      setStatus("selected-history-status", error.message, true);
     }
   }
 
   async function backfillHistory() {
     const chartType = byId("history-type").value;
     const country = byId("history-country").value || "GLOBAL";
-    const entityType = historyTypes[chartType];
-    const entityUris = selections.filter((item) => item.entityType === entityType).map((item) => item.entityUri);
-    if (!entityUris.length) {
-      setStatus("history-status", `Add a ${entityType === "track" ? "song" : "artist"} to your selection first.`, true);
-      return;
-    }
-
     const button = byId("history-backfill");
     button.disabled = true;
     button.textContent = "Loading current chart…";
-    setStatus("history-status", "Loading the latest chart to set the history target…");
+    setStatus("selected-history-status", "Loading the latest chart to set the history target…");
     try {
       const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
       const chartPayload = await requestJson(`/api/charts?${chartParams}`);
       const historyInfo = chartPayload.chartHistory;
-      if (!historyInfo?.supported) {
-        setStatus("history-status", historyInfo?.reason || "This chart cannot be backfilled yet.", true);
-        return;
-      }
-      if (historyInfo.complete) {
-        setStatus("history-status", `History is complete through ${historyInfo.targetDate}.`);
-        await loadHistory();
+      if (!historyInfo?.supported || !historyInfo.targetDate) {
+        setStatus("selected-history-status", historyInfo?.reason || "This chart cannot be backfilled yet.", true);
         return;
       }
 
+      const rangeValue = byId("history-range").value;
+      const rangeDays = rangeValue === "all" ? 3650 : Number(rangeValue);
+      const startDate = new Date(`${historyInfo.targetDate}T00:00:00Z`);
+      startDate.setUTCDate(startDate.getUTCDate() - Math.max(0, rangeDays - 1));
       button.textContent = "Fetching one batch…";
       const progress = await requestJson("/api/chart-history/backfill", {
         method: "POST",
@@ -376,24 +376,24 @@
           chart_type: chartType,
           country,
           target_date: historyInfo.targetDate,
-          entity_uris: entityUris,
+          start_date: startDate.toISOString().slice(0, 10),
         }),
       });
       await loadHistory();
       const progressText = `${Number(progress.processedDates || 0).toLocaleString()} of ${Number(progress.totalDates || 0).toLocaleString()} chart dates processed.`;
       if (progress.complete) {
         button.textContent = "History complete";
-        setStatus("history-status", `History is complete through ${progress.targetDate}. ${progressText}`);
+        setStatus("selected-history-status", `All chart entries are saved through ${progress.targetDate}. ${progressText}`);
       } else if (progress.status === "paused" || progress.status === "unavailable") {
         button.textContent = "Retry history backfill";
-        setStatus("history-status", `${progress.error || "Backfill paused."} ${progressText}`, true);
+        setStatus("selected-history-status", `${progress.error || "Backfill paused."} ${progressText}`, true);
       } else {
         button.textContent = "Continue backfill";
-        setStatus("history-status", `${progressText} Continue to fetch the next batch.`);
+        setStatus("selected-history-status", `${progressText} Continue to fetch the next batch.`);
       }
     } catch (error) {
       button.textContent = "Retry history backfill";
-      setStatus("history-status", error.message, true);
+      setStatus("selected-history-status", error.message, true);
     } finally {
       button.disabled = false;
     }
@@ -412,18 +412,11 @@
       else link.removeAttribute("aria-current");
     });
     if (validPage === "live") {
-      loadSelections().then((items) => {
-        if (items.length) return loadLiveData();
-        renderLiveGroup("track", []);
-        renderLiveGroup("artist", []);
-      }).catch((error) => {
-        renderLiveGroup("track", []);
-        renderLiveGroup("artist", []);
-        setStatus("live-status", error.message, true);
-      });
+      loadSelections().catch(() => {}).finally(loadLiveData);
     }
     if (validPage === "history") {
-      loadSelections().then(loadHistory).catch((error) => setStatus("history-status", error.message, true));
+      updateHistoryMetric();
+      loadHistory();
     }
   }
 
@@ -442,15 +435,13 @@
     const button = event.target.closest("[data-remove-uri]");
     if (button) removeSelection(button.dataset.removeUri);
   });
-  const removeLiveSelection = (event) => {
-    const button = event.target.closest("[data-live-remove-uri]");
-    if (button) removeSelection(button.dataset.liveRemoveUri);
-  };
-  byId("live-songs").addEventListener("click", removeLiveSelection);
-  byId("live-artists").addEventListener("click", removeLiveSelection);
   byId("live-controls").addEventListener("submit", (event) => {
     event.preventDefault();
     loadLiveData();
+  });
+  byId("live-filter").addEventListener("input", () => {
+    renderLiveGroup("track", liveData.songs);
+    renderLiveGroup("artist", liveData.artists);
   });
   byId("live-connect").addEventListener("click", () => {
     window.open("/auth/login", "_blank", "noopener,noreferrer");
@@ -461,20 +452,26 @@
     loadHistory();
   });
   byId("history-type").addEventListener("change", () => {
-    populateHistoryEntities();
+    updateHistoryMetric();
     loadHistory();
   });
-  byId("history-metric").addEventListener("change", loadHistory);
+  byId("history-metric").addEventListener("change", () => {
+    if (historyTrendData) renderHistoryTrend(historyTrendData);
+  });
   byId("history-range").addEventListener("change", loadHistory);
   byId("history-country").addEventListener("change", loadHistory);
-  byId("history-entity").addEventListener("change", loadHistory);
+  byId("history-filter").addEventListener("input", () => renderHistoryTable());
+  byId("history-table").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-history-uri]");
+    if (button) viewHistoryTrend(button.dataset.historyUri);
+  });
   byId("history-refresh").addEventListener("click", loadHistory);
   byId("history-connect").addEventListener("click", () => {
     window.open("/auth/login", "_blank", "noopener,noreferrer");
-    setStatus("history-status", "Spotify sign-in opened in a new tab. Return here after authorization; this page will refresh automatically.");
+    setStatus("selected-history-status", "Spotify sign-in opened in a new tab. Return here after authorization; this page will refresh automatically.");
   });
   byId("history-backfill").addEventListener("click", backfillHistory);
-  populateHistoryEntities();
+  updateHistoryMetric();
 
   activatePage(location.hash.slice(1) || "charts");
 })();
