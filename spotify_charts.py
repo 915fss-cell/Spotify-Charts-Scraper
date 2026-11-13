@@ -1,3 +1,4 @@
+import asyncio
 from copy import deepcopy
 from time import monotonic
 from httpx import AsyncClient, Client
@@ -106,8 +107,19 @@ class SpotifyCharts:
             return deepcopy(cached[1])
 
         async with AsyncClient(timeout=15) as client:
-            response = await client.get(url, headers=self.headers)
-            response.raise_for_status()
+            for attempt in range(3):
+                response = await client.get(url, headers=self.headers)
+                if response.status_code not in {429, 500, 502, 503, 504}:
+                    response.raise_for_status()
+                    break
+                if attempt == 2:
+                    response.raise_for_status()
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = max(float(retry_after), 0.25)
+                except (TypeError, ValueError):
+                    delay = 0.5 * (2**attempt)
+                await asyncio.sleep(min(delay, 30))
             payload = response.json()
         if not isinstance(payload, dict):
             raise ValueError("Spotify returned an unexpected chart response.")

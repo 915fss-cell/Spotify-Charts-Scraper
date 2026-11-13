@@ -520,7 +520,7 @@ async def focused_live(
     scraper = await get_spotify_scraper()
     method = getattr(scraper, CHART_METHODS[chart_type])
     markets = list(Countries)
-    semaphore = asyncio.Semaphore(6)
+    semaphore = asyncio.Semaphore(2)
     history_saved_regions = 0
     history_storage_available = True
 
