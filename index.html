@@ -263,7 +263,9 @@
         byId("chart-title").textContent = metadata.readableTitle || "Spotify chart";
         byId("chart-date-label").textContent = date;
         byId("section-title").textContent = "Chart rankings";
-        byId("summary-meta").textContent = `${entries.length} entries · ${metadata.recurrence === "WEEKLY" ? "weekly" : "daily"} chart`;
+        const cadence = byId("chart-type").value.startsWith("weekly_") ? "weekly" : "daily";
+        byId("summary-meta").textContent = `${entries.length} entries · ${cadence} chart`;
+
         if (!entries.length) {
           byId("table-scroll-hint").classList.remove("show");
           byId("chart-content").className = "empty";
@@ -307,6 +309,13 @@
         button.disabled = true;
         button.innerHTML = '<span class="spinner" aria-hidden="true"></span>Loading';
         hideBanner();
+        byId("section-title").textContent = "Loading chart";
+        byId("summary-meta").textContent = "";
+        byId("chart-title").textContent = "";
+        byId("chart-date-label").textContent = "Loading…";
+        byId("chart-content").className = "empty";
+        byId("chart-content").innerHTML = '<div><span class="empty-icon" aria-hidden="true">…</span><h3>Loading chart</h3><p>Fetching the latest rankings from Spotify Charts.</p></div>';
+        byId("history-status").hidden = true;
         try {
           const payload = await requestJson(`/api/charts?${params}`);
           if (requestId !== chartLoadSequence) return;
