@@ -3,7 +3,7 @@
   if (!app) return;
 
   const { byId, requestJson, escapeHtml, spotifyLink, getCachedChart } = app;
-  const state = { cadence: "daily", entityType: "track", view: "release", marketScope: "global" };
+  const state = { cadence: "daily", entityType: "track", view: "release", marketScope: "all" };
   let activePage = "charts";
   let liveOverview = null;
   let liveKey = "";
@@ -459,7 +459,6 @@
         if (activePage === "live" && liveOverview) renderLive(liveOverview);
         if (activePage === "history" && historyOverview) renderHistory(historyOverview);
       } else if (activePage === "live") {
-        state.marketScope = "global";
         updateLiveActionLabel();
         loadFocusedLive();
       } else if (activePage === "history") {
