@@ -11,16 +11,22 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
     <style>
       :root{color-scheme:dark;--bg:#111310;--panel:#191c18;--panel-2:#20241f;--line:#2c312a;--text:#f2f5ee;--muted:#92998d;--lime:#b8f26b;--lime-dark:#283b1d;--red:#ff817b;--radius:16px}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 18% -12%,#283520 0,transparent 36%),var(--bg);color:var(--text);font-family:"DM Sans",sans-serif;min-height:100vh}button,select,input{font:inherit}button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--lime);outline-offset:3px}.shell{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:100vh}.sidebar{border-right:1px solid var(--line);padding:28px 18px;display:flex;flex-direction:column;gap:38px}.brand{display:flex;align-items:center;gap:11px;padding:0 8px;font:700 17px "Space Grotesk",sans-serif;letter-spacing:-.5px}.brand-mark{width:31px;height:31px;display:grid;place-items:center;border-radius:10px;background:var(--lime);color:#14200d;font-size:15px}.nav-label{margin:0 10px 10px;color:#777e73;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase}.nav-link{display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:10px;color:#c7ccc2;text-decoration:none;font-size:13px}.nav-link.active{background:#262c22;color:var(--lime)}.nav-glyph{width:18px;text-align:center;font-size:15px}.side-note{margin-top:auto;padding:15px;border:1px solid var(--line);border-radius:13px;background:#171a16}.side-note strong{display:block;margin-bottom:6px;font-size:12px}.side-note p{margin:0;color:var(--muted);font-size:11px;line-height:1.55}.main{width:min(1250px,100%);padding:38px clamp(20px,5vw,64px) 56px;margin:0 auto}.topline{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:42px}.eyebrow{display:flex;align-items:center;gap:8px;color:var(--lime);font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase}.eyebrow::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--lime);box-shadow:0 0 14px #b8f26b99}.account-state{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:#c2c8bc;font-size:11px}.state-dot{width:7px;height:7px;border-radius:50%;background:#757c71}.state-dot.online{background:var(--lime);box-shadow:0 0 10px #b8f26b88}.intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:30px}.intro h1{margin:0;font:600 clamp(34px,5vw,54px)/1.02 "Space Grotesk",sans-serif;letter-spacing:-2.5px}.intro p{max-width:440px;margin:13px 0 0;color:var(--muted);font-size:14px;line-height:1.6}.connect-button,.load-button{border:0;border-radius:10px;background:var(--lime);color:#16210f;padding:11px 16px;font-size:12px;font-weight:700;cursor:pointer;transition:transform .15s,background .15s}.connect-button:hover,.load-button:hover{transform:translateY(-1px);background:#c9fb89}.connect-button:disabled,.load-button:disabled{cursor:not-allowed;opacity:.45;transform:none}.status-banner{display:none;align-items:flex-start;gap:12px;padding:14px 16px;margin-bottom:18px;border:1px solid #445238;border-radius:12px;background:#1e271a;color:#d6e8c4;font-size:12px;line-height:1.55}.status-banner.show{display:flex}.status-banner.error{border-color:#633c38;background:#2b1d1b;color:#ffd4cf}.status-symbol{color:var(--lime);font-size:16px}.status-banner.error .status-symbol{color:var(--red)}.filters{display:grid;grid-template-columns:1.25fr 1.35fr .9fr auto;align-items:end;gap:12px;padding:17px;border:1px solid var(--line);border-radius:var(--radius);background:#181b17;margin-bottom:22px}.field label{display:block;margin:0 0 7px 2px;color:#858d80;font-size:10px;font-weight:700;letter-spacing:1.1px;text-transform:uppercase}.field select,.field input{width:100%;min-height:42px;border:1px solid #343a32;border-radius:9px;background:#20241f;color:var(--text);padding:0 12px;font-size:12px}.load-button{min-height:42px;white-space:nowrap}.summary{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:0 2px 13px}.summary h2{margin:0;font:600 17px "Space Grotesk",sans-serif;letter-spacing:-.3px}.summary-meta{color:var(--muted);font-size:11px}.chart-card{overflow:hidden;border:1px solid var(--line);border-radius:var(--radius);background:#171a16}.chart-head{display:flex;align-items:center;justify-content:space-between;padding:17px 20px;border-bottom:1px solid var(--line)}.chart-title{font-size:13px;font-weight:600}.chart-date{color:var(--muted);font-size:11px}.table-scroll-hint{display:none;margin:0;padding:7px 16px;border-bottom:1px solid var(--line);color:var(--muted);font-size:10px}.table-scroll-hint.show{display:block}.history-status{margin:0;padding:10px 16px;border-bottom:1px solid var(--line);color:var(--muted);font-size:11px;line-height:1.5}.history-status[hidden]{display:none}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:1380px}thead th{padding:12px 16px;color:#7f877a;text-align:left;font-size:9px;letter-spacing:1.1px;text-transform:uppercase;font-weight:700}tbody tr{border-top:1px solid #272c26}tbody tr:hover{background:#1d211b}tbody td{padding:10px 16px;font-size:12px}.rank{width:58px;color:#a9b19f;font:600 13px "Space Grotesk",sans-serif}.track-cell{display:flex;align-items:center;gap:12px;min-width:230px}.cover{width:38px;height:38px;border-radius:6px;background:#292e27;object-fit:cover;flex:none}.track-name{color:#f0f3ec;font-weight:600;text-decoration:none}.track-name:hover{color:var(--lime)}.artist-name{margin-top:4px;color:#92998d;font-size:10px}.metric{color:#c4ccbd;font-variant-numeric:tabular-nums}.movement-cell{font-variant-numeric:tabular-nums;white-space:nowrap}.movement-up{color:var(--lime);font-weight:700}.movement-down{color:var(--red);font-weight:700}.movement-same{color:var(--muted);font-weight:700}.movement-new{color:var(--muted)}.date-cell{color:#c4ccbd;white-space:nowrap;font-variant-numeric:tabular-nums}.empty{display:grid;place-items:center;min-height:240px;padding:32px;text-align:center}.empty-icon{display:grid;place-items:center;width:42px;height:42px;margin:0 auto 13px;border:1px solid #394233;border-radius:13px;background:#20271c;color:var(--lime);font-size:19px}.empty h3{margin:0 0 7px;font:600 16px "Space Grotesk",sans-serif}.empty p{max-width:390px;margin:0;color:var(--muted);font-size:12px;line-height:1.6}.footnote{margin-top:14px;color:#747c70;font-size:10px;line-height:1.5}.spinner{display:inline-block;width:13px;height:13px;margin-right:8px;border:2px solid #26341f;border-top-color:#17220f;border-radius:50%;vertical-align:-2px;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.mobile-nav{display:none}@media(max-width:900px){.shell{grid-template-columns:68px minmax(0,1fr)}.sidebar{align-items:center;padding:23px 9px}.brand{padding:0}.brand-name,.nav-label,.nav-text,.side-note{display:none}.nav-link{justify-content:center;width:44px;height:44px;padding:0}.main{padding:30px 24px 44px}.filters{grid-template-columns:1fr 1fr}.load-button{width:100%}}@media(max-width:600px){.shell{display:block}.sidebar{display:none}.main{padding:23px 16px 38px}.topline{margin-bottom:30px}.intro{display:block;margin-bottom:24px}.intro h1{font-size:38px}.intro p{font-size:13px}.connect-button{margin-top:17px}.filters{grid-template-columns:1fr 1fr;padding:13px}.filters .field:first-child{grid-column:span 2}.load-button{grid-column:span 2}.summary{align-items:flex-start;flex-direction:column;gap:5px}.chart-head{padding:15px}.account-state{font-size:10px}}
-    </style>
+      .page-panel[hidden]{display:none!important}.sidebar .nav-link{margin-top:5px}.topline-actions{display:flex;align-items:center;gap:8px}.quiet-button,.icon-button{border:1px solid var(--line);border-radius:999px;background:var(--panel-2);color:var(--text);padding:10px 15px;font-weight:600;cursor:pointer;transition:background .2s,border-color .2s}.quiet-button:hover,.icon-button:hover{background:#2b3127;border-color:#46523f}.icon-button{width:38px;height:38px;padding:0;font-size:22px;line-height:1}.page-status{color:var(--muted);font-size:13px;line-height:1.6;margin:16px 0}.page-status.error{color:var(--red)}.selected-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:18px}.selected-card{min-width:0}.entity-list{display:flex;flex-direction:column}.entity-row{display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:13px;padding:13px 18px;border-top:1px solid var(--line)}.entity-row:first-child{border-top:0}.entity-cover{width:42px;height:42px;border-radius:9px;object-fit:cover;background:var(--panel-2)}.entity-copy{min-width:0}.entity-title{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-weight:650;text-decoration:none}.entity-title:hover{color:var(--lime)}.entity-subtitle{margin-top:3px;color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.entity-metrics{text-align:right;white-space:nowrap}.entity-rank{font-size:16px;font-weight:700}.entity-streams{margin-top:3px;color:var(--muted);font-size:11px}.entity-empty{padding:24px 18px;color:var(--muted);font-size:13px;line-height:1.6}.history-controls{grid-template-columns:repeat(3,minmax(0,1fr)) auto;align-items:end}.history-actions{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:10px 0 16px}.history-actions .page-status{margin:0}.history-chart-wrap{position:relative;min-height:340px;padding:12px 18px 18px}.history-empty{position:absolute;inset:0;display:grid;place-items:center;margin:0;padding:24px;color:var(--muted);text-align:center;pointer-events:none}.history-empty[hidden]{display:none}.history-data-card{margin-top:18px}.history-table{overflow-x:auto}.history-table table{width:100%;border-collapse:collapse;min-width:440px}.history-table th,.history-table td{padding:12px 16px;border-top:1px solid var(--line);text-align:left;font-size:12px}.history-table th{color:var(--muted);font-weight:600}.history-table td{font-variant-numeric:tabular-nums}.selection-dialog{width:min(720px,calc(100vw - 32px));max-height:min(86vh,820px);overflow:auto;border:1px solid var(--line);border-radius:20px;background:var(--panel);color:var(--text);padding:24px;box-shadow:0 24px 80px #0009}.selection-dialog::backdrop{background:#090b08c9;backdrop-filter:blur(4px)}.dialog-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.dialog-header h2{font-family:"Space Grotesk",sans-serif;font-size:24px;margin:5px 0 0}.selection-search{display:grid;grid-template-columns:minmax(0,1fr) 170px auto;align-items:end;gap:12px;margin-top:22px}.selection-search .field{min-width:0}.dialog-section-title{margin:22px 0 9px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}.selection-list{display:flex;flex-direction:column;gap:8px}.selection-item{display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:12px;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}.selection-item .entity-cover{width:44px;height:44px}.selection-kind{display:block;margin-top:3px;color:var(--muted);font-size:11px}.selection-action{border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--lime);padding:7px 12px;font-size:12px;font-weight:650;cursor:pointer}.selection-action:disabled{color:var(--muted);cursor:default}.selection-action.remove{color:var(--red)}.selection-empty{padding:12px;color:var(--muted);font-size:13px}.history-chart-card,.history-data-card{overflow:hidden}@media(max-width:980px){.history-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.selected-grid{grid-template-columns:1fr}}@media(max-width:640px){.history-controls,.selection-search{grid-template-columns:1fr}.history-actions{align-items:flex-start;flex-direction:column}.selection-dialog{padding:18px}.entity-row{padding:12px}.history-chart-wrap{min-height:280px;padding:8px}.selection-item{grid-template-columns:38px minmax(0,1fr) auto}.selection-item .entity-cover{width:38px;height:38px}}
+  </style>
   </head>
   <body>
     <div class="shell">
       <aside class="sidebar" aria-label="Primary navigation">
         <div class="brand"><span class="brand-mark" aria-hidden="true">♫</span><span class="brand-name">chartroom</span></div>
-        <div><p class="nav-label">Workspace</p><a class="nav-link active" href="#charts" aria-current="page"><span class="nav-glyph" aria-hidden="true">▤</span><span class="nav-text">Charts explorer</span></a></div>
+        <div>
+          <p class="nav-label">Workspace</p>
+          <a class="nav-link active" href="#charts" data-page-nav="charts" aria-current="page"><span class="nav-glyph" aria-hidden="true">▤</span><span class="nav-text">Charts explorer</span></a>
+          <a class="nav-link" href="#live" data-page-nav="live"><span class="nav-glyph" aria-hidden="true">◉</span><span class="nav-text">Live selected</span></a>
+          <a class="nav-link" href="#history" data-page-nav="history"><span class="nav-glyph" aria-hidden="true">⌁</span><span class="nav-text">History</span></a>
+        </div>
         <div class="side-note"><strong>Spotify Charts</strong><p>Explore official daily and weekly rankings by country. Data loads directly from Spotify Charts.</p></div>
       </aside>
-      <main class="main" id="charts">
+      <main class="main page-panel" id="charts" data-page-panel="charts">
         <div class="topline"><span class="eyebrow">Global listening, in focus</span><span class="account-state" id="account-state"><span class="state-dot" id="state-dot"></span><span id="state-label">Checking connection</span></span></div>
         <section class="intro" aria-labelledby="page-title">
           <div><h1 id="page-title">Chartroom<span style="color:var(--lime)">.</span></h1><p>Find the songs, artists, and albums shaping the moment. Choose a market and chart to explore Spotify rankings.</p></div>
@@ -42,7 +48,64 @@
         </section>
         <p class="footnote" id="date-help">Use “latest” or a chart date in YYYY-MM-DD format. Rankings are returned by Spotify Charts; historical availability varies by chart.</p>
       </main>
+      <main class="main page-panel" id="live" data-page-panel="live" hidden>
+        <div class="topline"><span class="eyebrow">Your selected entities</span><button class="quiet-button" id="manage-selections" type="button">Manage selection</button></div>
+        <section class="intro" aria-labelledby="live-title">
+          <div><h1 id="live-title">Live watchlist<span style="color:var(--lime)">.</span></h1><p>The latest available Spotify chart positions and metrics for songs and artists you follow.</p></div>
+          <button class="connect-button" id="live-connect" type="button">Connect Spotify</button>
+        </section>
+        <form class="filters" id="live-controls">
+          <div class="field"><label for="live-country">Market</label><select id="live-country" name="country" required></select></div>
+          <div class="field"><label for="live-cadence">Chart cadence</label><select id="live-cadence" name="cadence"><option value="daily">Daily</option><option value="weekly">Weekly</option></select></div>
+          <button class="load-button" id="live-refresh" type="submit">Refresh live data</button>
+        </form>
+        <p class="page-status" id="live-status" role="status" aria-live="polite">Add songs or artists to your watchlist to get started.</p>
+        <div class="selected-grid">
+          <section class="chart-card selected-card" aria-labelledby="live-songs-title">
+            <div class="chart-head"><span class="chart-title" id="live-songs-title">Selected songs</span><span class="chart-date" id="live-songs-count">0 followed</span></div>
+            <div class="entity-list" id="live-songs"></div>
+          </section>
+          <section class="chart-card selected-card" aria-labelledby="live-artists-title">
+            <div class="chart-head"><span class="chart-title" id="live-artists-title">Selected artists</span><span class="chart-date" id="live-artists-count">0 followed</span></div>
+            <div class="entity-list" id="live-artists"></div>
+          </section>
+        </div>
+      </main>
+      <main class="main page-panel" id="history" data-page-panel="history" hidden>
+        <div class="topline"><span class="eyebrow">Snapshots from selected charts</span><div class="topline-actions"><button class="quiet-button" id="history-refresh" type="button">Refresh history</button><button class="connect-button" id="history-connect" type="button">Connect Spotify</button></div></div>
+        <section class="intro" aria-labelledby="history-title">
+          <div><h1 id="history-title">History<span style="color:var(--lime)">.</span></h1><p>Explore chart-rank and stream trends for the songs and artists in your watchlist.</p></div>
+        </section>
+        <form class="filters history-controls" id="history-controls">
+          <div class="field"><label for="history-country">Market</label><select id="history-country" name="country" required></select></div>
+          <div class="field"><label for="history-type">Chart</label><select id="history-type" name="type"><option value="daily_top_songs">Daily songs</option><option value="weekly_top_songs">Weekly songs</option><option value="daily_top_artists">Daily artists</option><option value="weekly_top_artists">Weekly artists</option></select></div>
+          <div class="field"><label for="history-entity">Selected song or artist</label><select id="history-entity" name="entity" required></select></div>
+          <div class="field"><label for="history-metric">Metric</label><select id="history-metric" name="metric"><option value="streams">Chart streams</option><option value="rank">Chart rank</option></select></div>
+          <div class="field"><label for="history-range">Date range</label><select id="history-range" name="range"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="365">1 year</option><option value="all">All available</option></select></div>
+          <button class="load-button" id="history-load" type="submit">Load history</button>
+        </form>
+        <div class="history-actions"><p class="page-status" id="history-status" role="status" aria-live="polite">Select an entity to see its stored chart history.</p><button class="quiet-button" id="history-backfill" type="button">Backfill available history</button></div>
+        <section class="chart-card history-chart-card" aria-labelledby="history-chart-title">
+          <div class="chart-head"><span class="chart-title" id="history-chart-title">Chart history</span><span class="chart-date" id="history-chart-range">No data loaded</span></div>
+          <div class="history-chart-wrap"><canvas id="history-chart" role="img" aria-label="Historical chart metrics for the selected Spotify entity"></canvas><p id="history-empty" class="history-empty">No snapshots yet. Load live data to begin collecting history.</p></div>
+        </section>
+        <section class="chart-card history-data-card" aria-labelledby="history-data-title">
+          <div class="chart-head"><span class="chart-title" id="history-data-title">Recent snapshots</span></div>
+          <div id="history-table" class="history-table"></div>
+        </section>
+      </main>
     </div>
+    <dialog class="selection-dialog" id="selection-dialog" aria-labelledby="selection-dialog-title">
+      <div class="dialog-header"><div><span class="eyebrow">Your watchlist</span><h2 id="selection-dialog-title">Manage selected songs and artists</h2></div><button class="icon-button" id="selection-close" type="button" aria-label="Close selection dialog">×</button></div>
+      <form id="selection-search-form" class="selection-search">
+        <div class="field"><label for="selection-query">Search Spotify</label><input id="selection-query" name="query" type="search" minlength="2" maxlength="80" placeholder="Song or artist name" autocomplete="off" required /></div>
+        <div class="field"><label for="selection-type">Search for</label><select id="selection-type" name="type"><option value="all">Songs and artists</option><option value="track">Songs</option><option value="artist">Artists</option></select></div>
+        <button class="load-button" id="selection-search-button" type="submit">Search</button>
+      </form>
+      <p class="page-status" id="selection-status" role="status" aria-live="polite">Search Spotify and add only the songs or artists you want to track.</p>
+      <section aria-labelledby="search-results-title"><h3 class="dialog-section-title" id="search-results-title">Search results</h3><div id="selection-results" class="selection-list"></div></section>
+      <section aria-labelledby="saved-selections-title"><h3 class="dialog-section-title" id="saved-selections-title">Saved selection</h3><div id="selection-list" class="selection-list"></div></section>
+    </dialog>
     <script>
       const byId = (id) => document.getElementById(id);
       let appStatus = null;
@@ -95,8 +158,12 @@
       });
       async function loadCountries() {
         const countries = await requestJson("/api/countries");
-        byId("country").innerHTML = countries.map((item) => `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)}</option>`).join("");
-        byId("country").value = "GLOBAL";
+        for (const id of ["country", "live-country", "history-country"]) {
+          const select = byId(id);
+          if (!select) continue;
+          select.innerHTML = countries.map((item) => `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)}</option>`).join("");
+          select.value = "GLOBAL";
+        }
       }
       function spotifyLink(uri) {
         const match = /^spotify:(track|artist|album):([A-Za-z0-9]+)$/.exec(uri || "");
@@ -128,32 +195,35 @@
           return;
         }
         if (historyInfo.complete) {
-          status.textContent = `History complete through ${historyInfo.targetDate}. Totals include streams from chart appearances in this market only.`;
+          status.textContent = historyInfo.metric === "rank"
+            ? `Rank history complete through ${historyInfo.targetDate}.`
+            : `History complete through ${historyInfo.targetDate}. Totals include streams from chart appearances in this market only.`;
         } else if (historyInfo.status === "paused") {
           status.textContent = `Backfill paused: ${historyInfo.error || "Spotify history could not be loaded."} Reload the chart to resume.`;
         } else {
-          status.textContent = `Backfilling chart history: ${Number(historyInfo.processedDates || 0).toLocaleString()} of ${Number(historyInfo.totalDates || 0).toLocaleString()} chart dates processed. Totals appear when complete.`;
+          const progressLabel = historyInfo.metric === "rank" ? "Rank snapshots are saved as they are fetched." : "Totals appear when complete.";
+          status.textContent = `Backfilling chart history: ${Number(historyInfo.processedDates || 0).toLocaleString()} of ${Number(historyInfo.totalDates || 0).toLocaleString()} chart dates processed. ${progressLabel}`;
         }
       }
       function updateCumulativeTotals(totals) {
-        document.querySelectorAll("#chart-content tbody tr[data-track-uri]").forEach((row) => {
+        document.querySelectorAll("#chart-content tbody tr[data-entity-uri]").forEach((row) => {
           const cell = row.querySelector("[data-total-streams]");
-          if (cell) cell.textContent = Number(totals[row.dataset.trackUri] ?? 0).toLocaleString();
+          if (cell) cell.textContent = Number(totals[row.dataset.entityUri] ?? 0).toLocaleString();
         });
       }
       async function continueChartHistory(payload, requestId) {
         const historyInfo = payload.chartHistory;
         if (!historyInfo?.supported || historyInfo.complete) return;
-        const trackUris = (payload.entries || [])
+        const entityUris = (payload.entries || [])
           .filter((entry) => Object.prototype.hasOwnProperty.call(entry.chartEntryData || {}, "cumulativeChartStreams"))
-          .map((entry) => entry.trackMetadata?.trackUri)
+          .map((entry) => entry.trackMetadata?.trackUri || entry.artistMetadata?.artistUri)
           .filter(Boolean);
-        if (!trackUris.length) return;
+        if (!entityUris.length) return;
         const body = JSON.stringify({
           chart_type: byId("chart-type").value,
           country: byId("country").value,
           target_date: historyInfo.targetDate,
-          track_uris: trackUris,
+          entity_uris: entityUris,
         });
         while (requestId === chartLoadSequence) {
           try {
@@ -163,9 +233,9 @@
               body,
             });
             if (requestId !== chartLoadSequence) return;
-            updateChartHistoryStatus(progress);
+            updateChartHistoryStatus({ ...progress, metric: historyInfo.metric });
             if (progress.complete) {
-              updateCumulativeTotals(progress.totals || {});
+              if (historyInfo.metric !== "rank") updateCumulativeTotals(progress.totals || {});
               return;
             }
             if (progress.status === "paused" || progress.status === "unavailable") return;
@@ -206,15 +276,15 @@
           const titleHtml = link ? `<a class="track-name" href="${escapeHtml(link)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>` : `<span class="track-name">${escapeHtml(title)}</span>`;
           const metric = stats.rankingMetric?.value ? Number(stats.rankingMetric.value).toLocaleString() : "—";
           const isTracked = Object.prototype.hasOwnProperty.call(stats, "cumulativeChartStreams");
-          const totalStreams = !isTracked ? "Not tracked" : !historyInfo?.supported ? "Not tracked" : historyInfo.complete ? Number(stats.cumulativeChartStreams ?? 0).toLocaleString() : historyInfo.status === "paused" ? "Paused" : "Backfilling…";
-          const trackUri = meta.trackUri || "";
+          const totalStreams = historyInfo?.metric === "rank" ? historyInfo.complete ? "Rank saved" : "Collecting rank" : !isTracked ? "Not tracked" : !historyInfo?.supported ? "Not tracked" : historyInfo.complete ? Number(stats.cumulativeChartStreams ?? 0).toLocaleString() : historyInfo.status === "paused" ? "Paused" : "Backfilling…";
+          const entityUri = meta.trackUri || meta.artistUri || "";
           const movement = chartMovement(stats);
           const releaseDate = meta.releaseDate || "—";
-          return `<tr data-track-uri="${escapeHtml(trackUri)}"><td class="rank">${escapeHtml(stats.currentRank ?? "—")}</td><td class="movement-cell ${movement.className}" aria-label="${escapeHtml(movement.ariaLabel)}">${escapeHtml(movement.label)}</td><td><div class="track-cell">${image ? `<img class="cover" src="${escapeHtml(image)}" alt="" loading="lazy" />` : '<span class="cover" aria-hidden="true"></span>'}<div>${titleHtml}${artistNames ? `<div class="artist-name">${escapeHtml(artistNames)}</div>` : ""}</div></div></td><td class="metric">${escapeHtml(stats.peakRank ?? "—")}</td><td class="metric">${escapeHtml(stats.previousRank ?? "—")}</td><td class="metric">${escapeHtml(stats.consecutiveAppearancesOnChart ?? "—")}</td><td class="date-cell">${escapeHtml(releaseDate)}</td><td class="date-cell">${escapeHtml(stats.entryDate ?? "—")}</td><td class="metric">${escapeHtml(stats.entryRank ?? "—")}</td><td class="metric">${escapeHtml(stats.appearancesOnChart ?? "—")}</td><td class="metric">${escapeHtml(metric)}</td><td class="metric" data-total-streams>${escapeHtml(totalStreams)}</td></tr>`;
+          return `<tr data-entity-uri="${escapeHtml(entityUri)}"><td class="rank">${escapeHtml(stats.currentRank ?? "—")}</td><td class="movement-cell ${movement.className}" aria-label="${escapeHtml(movement.ariaLabel)}">${escapeHtml(movement.label)}</td><td><div class="track-cell">${image ? `<img class="cover" src="${escapeHtml(image)}" alt="" loading="lazy" />` : '<span class="cover" aria-hidden="true"></span>'}<div>${titleHtml}${artistNames ? `<div class="artist-name">${escapeHtml(artistNames)}</div>` : ""}</div></div></td><td class="metric">${escapeHtml(stats.peakRank ?? "—")}</td><td class="metric">${escapeHtml(stats.previousRank ?? "—")}</td><td class="metric">${escapeHtml(stats.consecutiveAppearancesOnChart ?? "—")}</td><td class="date-cell">${escapeHtml(releaseDate)}</td><td class="date-cell">${escapeHtml(stats.entryDate ?? "—")}</td><td class="metric">${escapeHtml(stats.entryRank ?? "—")}</td><td class="metric">${escapeHtml(stats.appearancesOnChart ?? "—")}</td><td class="metric">${escapeHtml(metric)}</td><td class="metric" data-total-streams>${escapeHtml(totalStreams)}</td></tr>`;
         }).join("");
         byId("chart-content").className = "table-wrap";
         const totalAppearancesLabel = metadata.recurrence === "WEEKLY" ? "Total weeks on chart" : "Total days on chart";
-        byId("chart-content").innerHTML = `<table><thead><tr><th scope="col">Rank</th><th scope="col">Movement</th><th scope="col">Entry</th><th scope="col">Peak</th><th scope="col">Prev</th><th scope="col">Streak</th><th scope="col">Release Date</th><th scope="col">First entry date</th><th scope="col">First entry position</th><th scope="col">${totalAppearancesLabel}</th><th scope="col">${escapeHtml(metricLabel)}</th><th scope="col" title="Sum of streams from every date this song appeared in this chart and market.">Total chart streams</th></tr></thead><tbody>${rows}</tbody></table>`;
+        byId("chart-content").innerHTML = `<table><thead><tr><th scope="col">Rank</th><th scope="col">Movement</th><th scope="col">Entry</th><th scope="col">Peak</th><th scope="col">Prev</th><th scope="col">Streak</th><th scope="col">Release Date</th><th scope="col">First entry date</th><th scope="col">First entry position</th><th scope="col">${totalAppearancesLabel}</th><th scope="col">${escapeHtml(metricLabel)}</th><th scope="col" title="Selected chart history for this entity in this market.">${historyInfo?.metric === "rank" ? "Rank history" : "Total chart streams"}</th></tr></thead><tbody>${rows}</tbody></table>`;
         updateChartHistoryStatus(historyInfo);
         updateTableScrollHint();
       }
@@ -244,7 +314,10 @@
           button.textContent = "Load chart";
         }
       });
+      window.Chartroom = { byId, requestJson, escapeHtml, spotifyLink };
       Promise.all([loadCountries(), loadStatus()]).catch((error) => showBanner(error.message, true));
     </script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" defer></script>
+    <script src="/selected-pages.js" defer></script>
   </body>
 </html>

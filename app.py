@@ -4,20 +4,21 @@ import asyncio
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import date as calendar_date
+from datetime import date as calendar_date, timedelta
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlencode
+from typing import Any, Literal
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 from fastapi import Cookie, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from chart_history import (
     ChartHistoryStorageError,
     close_history_pool,
-    entry_track_uri,
+    entry_entity_uri,
+    get_history_pool,
     prepare_chart_history,
     run_history_backfill_batch,
 )
@@ -39,16 +40,27 @@ access_token: str | None = None
 access_token_expires_at = 0.0
 token_refresh_lock = asyncio.Lock()
 
-SONG_CHART_STEPS = {"daily_top_songs": 1, "weekly_top_songs": 7}
-# Add Spotify track URIs here only after the user identifies songs to track.
-TRACK_HISTORY_TRACK_URIS: frozenset[str] = frozenset()
+HISTORY_CHART_TYPES = {
+    "daily_top_songs": "track",
+    "weekly_top_songs": "track",
+    "daily_top_artists": "artist",
+    "weekly_top_artists": "artist",
+}
 
 
 class ChartHistoryBackfillRequest(BaseModel):
     chart_type: str
     country: str
     target_date: calendar_date
-    track_uris: list[str] = Field(max_length=200)
+    entity_uris: list[str] = Field(max_length=200)
+
+
+class SelectionInput(BaseModel):
+    entity_type: Literal["track", "artist"]
+    entity_uri: str = Field(min_length=16, max_length=128)
+    entity_name: str = Field(min_length=1, max_length=300)
+    artist_names: str = Field(default="", max_length=500)
+    image_url: str | None = Field(default=None, max_length=2048)
 
 
 CHART_METHODS = {
@@ -86,6 +98,11 @@ def missing_configuration() -> list[str]:
     return missing
 
 
+def require_spotify_connection() -> None:
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="Connect Spotify before using your saved selection.")
+
+
 async def get_spotify_scraper() -> SpotifyCharts:
     global refresh_token, access_token, access_token_expires_at
 
@@ -121,6 +138,11 @@ async def index() -> HTMLResponse:
     return HTMLResponse(page)
 
 
+@app.get("/selected-pages.js", include_in_schema=False)
+async def selected_pages_script() -> FileResponse:
+    return FileResponse(Path(__file__).with_name("selected_pages.js"), media_type="application/javascript")
+
+
 @app.get("/api/status")
 async def status(request: Request) -> dict[str, Any]:
     missing = missing_configuration()
@@ -138,6 +160,271 @@ async def countries() -> list[dict[str, str]]:
         {"code": country.value, "name": country.name.replace("_", " ").title()}
         for country in Countries
     ]
+
+
+async def read_selected_entities(entity_type: str | None = None) -> list[dict[str, Any]]:
+    try:
+        pool = await get_history_pool()
+        if entity_type:
+            rows = await pool.fetch(
+                """
+                SELECT entity_uri, entity_type, entity_name, artist_names, image_url
+                FROM public.spotify_chart_selections
+                WHERE entity_type = $1
+                ORDER BY entity_name ASC
+                """,
+                entity_type,
+            )
+        else:
+            rows = await pool.fetch(
+                """
+                SELECT entity_uri, entity_type, entity_name, artist_names, image_url
+                FROM public.spotify_chart_selections
+                ORDER BY entity_type ASC, entity_name ASC
+                """
+            )
+        return [dict(row) for row in rows]
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Selected entities are temporarily unavailable.") from error
+
+
+def is_valid_entity_uri(uri: str, entity_type: str | None = None) -> bool:
+    parts = uri.split(":")
+    return (
+        len(parts) == 3
+        and parts[0] == "spotify"
+        and parts[1] in {"track", "artist"}
+        and (entity_type is None or parts[1] == entity_type)
+        and bool(parts[2])
+        and all(character.isascii() and character.isalnum() for character in parts[2])
+    )
+
+
+def selection_response(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "entityUri": row["entity_uri"],
+        "entityType": row["entity_type"],
+        "entityName": row["entity_name"],
+        "artistNames": row["artist_names"],
+        "imageUrl": row["image_url"],
+    }
+
+
+@app.get("/api/selections")
+async def list_selections() -> list[dict[str, Any]]:
+    require_spotify_connection()
+    return [selection_response(row) for row in await read_selected_entities()]
+
+
+@app.post("/api/selections")
+async def save_selection(selection: SelectionInput) -> dict[str, Any]:
+    require_spotify_connection()
+    if not is_valid_entity_uri(selection.entity_uri, selection.entity_type):
+        raise HTTPException(status_code=400, detail="Choose a valid Spotify song or artist.")
+    if selection.image_url:
+        try:
+            image = urlsplit(selection.image_url)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Spotify artwork URL is invalid.") from error
+        if image.scheme != "https" or image.hostname != "i.scdn.co":
+            raise HTTPException(status_code=400, detail="Spotify artwork must use a trusted Spotify image URL.")
+
+    try:
+        pool = await get_history_pool()
+        row = await pool.fetchrow(
+            """
+            INSERT INTO public.spotify_chart_selections
+                (entity_uri, entity_type, entity_name, artist_names, image_url)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (entity_uri) DO UPDATE SET
+                entity_type = EXCLUDED.entity_type,
+                entity_name = EXCLUDED.entity_name,
+                artist_names = EXCLUDED.artist_names,
+                image_url = EXCLUDED.image_url
+            RETURNING entity_uri, entity_type, entity_name, artist_names, image_url
+            """,
+            selection.entity_uri,
+            selection.entity_type,
+            selection.entity_name.strip(),
+            selection.artist_names.strip(),
+            selection.image_url,
+        )
+        return selection_response(dict(row))
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="The selection could not be saved right now.") from error
+
+
+@app.delete("/api/selections/{entity_uri:path}")
+async def remove_selection(entity_uri: str) -> dict[str, bool]:
+    require_spotify_connection()
+    if not is_valid_entity_uri(entity_uri):
+        raise HTTPException(status_code=400, detail="Choose a valid Spotify song or artist.")
+    try:
+        pool = await get_history_pool()
+        result = await pool.execute(
+            "DELETE FROM public.spotify_chart_selections WHERE entity_uri = $1",
+            entity_uri,
+        )
+        return {"deleted": result.endswith("1")}
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="The selection could not be removed right now.") from error
+
+
+@app.get("/api/search")
+async def search_entities(
+    query: str = Query(..., min_length=2, max_length=80),
+    entity_type: Literal["all", "track", "artist"] = Query("all"),
+    limit: int = Query(12, ge=1, le=20),
+) -> dict[str, Any]:
+    scraper = await get_spotify_scraper()
+    try:
+        items = await scraper.search_entities(query.strip(), entity_type, limit)
+        return {"items": items}
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="Spotify search is rate-limited. Try again shortly.") from error
+        raise HTTPException(status_code=502, detail="Spotify could not complete this search. Try again shortly.") from error
+    except (httpx.HTTPError, ValueError) as error:
+        raise HTTPException(status_code=502, detail="Spotify could not complete this search. Try again shortly.") from error
+
+
+@app.get("/api/selected/live")
+async def selected_live(
+    country: str = Query("GLOBAL", min_length=2, max_length=6),
+    cadence: Literal["daily", "weekly"] = Query("daily"),
+) -> dict[str, Any]:
+    require_spotify_connection()
+    country = country.upper()
+    if country not in {item.value for item in Countries}:
+        raise HTTPException(status_code=400, detail="Choose a country from the list.")
+
+    selected = await read_selected_entities()
+    grouped = {
+        entity_type: [row for row in selected if row["entity_type"] == entity_type]
+        for entity_type in ("track", "artist")
+    }
+    if not selected:
+        return {"country": country, "cadence": cadence, "songs": [], "artists": [], "history": {}}
+
+    scraper = await get_spotify_scraper()
+    response: dict[str, Any] = {"country": country, "cadence": cadence, "songs": [], "artists": [], "history": {}}
+    for entity_type, entities in grouped.items():
+        if not entities:
+            continue
+        chart_type = f"{cadence}_top_{'songs' if entity_type == 'track' else 'artists'}"
+        try:
+            payload = await getattr(scraper, CHART_METHODS[chart_type])(country, "latest")
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 429:
+                raise HTTPException(status_code=429, detail="Spotify rate-limited this chart. Try again shortly.") from error
+            raise HTTPException(status_code=502, detail="Spotify could not return this chart. Try again shortly.") from error
+        except (httpx.HTTPError, ValueError) as error:
+            raise HTTPException(status_code=502, detail="Spotify could not return this chart. Try again shortly.") from error
+
+        entries = payload.get("entries") if isinstance(payload, dict) else None
+        if not isinstance(entries, list):
+            raise HTTPException(status_code=502, detail="Spotify returned an unsupported chart format.")
+        entry_by_uri = {
+            uri: entry
+            for entry in entries
+            if isinstance(entry, dict) and (uri := entry_entity_uri(entry)) is not None
+        }
+        present_entries = [entry_by_uri[row["entity_uri"]] for row in entities if row["entity_uri"] in entry_by_uri]
+        response["history"][entity_type] = {"status": "not_started"}
+        if present_entries:
+            try:
+                response["history"][entity_type] = await prepare_chart_history(
+                    chart_type,
+                    country,
+                    "latest",
+                    {**payload, "entries": present_entries},
+                    {row["entity_uri"] for row in entities},
+                )
+            except ChartHistoryStorageError:
+                response["history"][entity_type] = {"status": "unavailable", "reason": "History storage is unavailable."}
+
+        output_key = "songs" if entity_type == "track" else "artists"
+        for selection in entities:
+            entry = entry_by_uri.get(selection["entity_uri"])
+            stats = (entry or {}).get("chartEntryData") or {}
+            metric = stats.get("rankingMetric") or {}
+            response[output_key].append({
+                **selection_response(selection),
+                "inChart": entry is not None,
+                "chartRank": stats.get("currentRank"),
+                "previousRank": stats.get("previousRank"),
+                "peakRank": stats.get("peakRank"),
+                "metricType": metric.get("type"),
+                "metricValue": metric.get("value"),
+                "chartDate": (payload.get("displayChart") or {}).get("date", "Latest"),
+            })
+    return response
+
+
+@app.get("/api/selected/history")
+async def selected_history(
+    chart_type: Literal["daily_top_songs", "weekly_top_songs", "daily_top_artists", "weekly_top_artists"],
+    country: str = Query("GLOBAL", min_length=2, max_length=6),
+    entity_uri: str | None = Query(None, min_length=16, max_length=128),
+    range: str = Query("90", min_length=1, max_length=10),
+) -> dict[str, Any]:
+    require_spotify_connection()
+    country = country.upper()
+    if country not in {item.value for item in Countries}:
+        raise HTTPException(status_code=400, detail="Choose a country from the list.")
+    if range == "all":
+        start_date = None
+    else:
+        try:
+            days = int(range)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Choose a valid history range.") from error
+        if days < 1 or days > 3650:
+            raise HTTPException(status_code=400, detail="Choose a valid history range.")
+        start_date = calendar_date.today() - timedelta(days=days)
+
+    entity_type = HISTORY_CHART_TYPES[chart_type]
+    selected = await read_selected_entities(entity_type)
+    available = {row["entity_uri"]: row for row in selected}
+    if entity_uri and entity_uri not in available:
+        raise HTTPException(status_code=404, detail="Select an entity from your saved watchlist.")
+    current_uri = entity_uri or (selected[0]["entity_uri"] if selected else None)
+    current = available.get(current_uri) if current_uri else None
+    if current is None:
+        return {"chartType": chart_type, "country": country, "entity": None, "points": []}
+
+    try:
+        pool = await get_history_pool()
+        rows = await pool.fetch(
+            """
+            SELECT chart_date, chart_rank, stream_count
+            FROM public.spotify_chart_snapshots
+            WHERE chart_type = $1 AND country_code = $2 AND entity_type = $3
+              AND track_uri = $4 AND ($5::date IS NULL OR chart_date >= $5::date)
+            ORDER BY chart_date ASC
+            """,
+            chart_type,
+            country,
+            entity_type,
+            current_uri,
+            start_date,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Chart history is temporarily unavailable.") from error
+
+    return {
+        "chartType": chart_type,
+        "country": country,
+        "entity": selection_response(current),
+        "points": [
+            {
+                "chartDate": row["chart_date"].isoformat(),
+                "chartRank": row["chart_rank"],
+                "streamCount": row["stream_count"],
+            }
+            for row in rows
+        ],
+    }
 
 
 @app.get("/auth/login")
@@ -248,48 +535,61 @@ async def chart(
     if not isinstance(result, dict) or not isinstance(result.get("entries"), list):
         raise HTTPException(status_code=502, detail="Spotify returned an unsupported chart format.")
 
-    if chart_type not in SONG_CHART_STEPS:
+    if chart_type not in HISTORY_CHART_TYPES:
         result["chartHistory"] = {
             "supported": False,
             "complete": False,
             "status": "unsupported",
-            "reason": "Cumulative chart streams are available for Top Songs charts only.",
+            "reason": "History is available for selected Top Songs and Top Artists charts.",
         }
-    elif not TRACK_HISTORY_TRACK_URIS:
-        result["chartHistory"] = {
-            "supported": False,
-            "complete": False,
-            "status": "unconfigured",
-            "reason": "Cumulative totals are opt-in; no songs are configured for tracking yet.",
-        }
-    else:
-        selected_entries = [
-            entry for entry in result["entries"] if entry_track_uri(entry) in TRACK_HISTORY_TRACK_URIS
-        ]
+        return result
+
+    try:
+        selected_entities = await read_selected_entities(HISTORY_CHART_TYPES[chart_type])
+        selected_uris = {row["entity_uri"] for row in selected_entities}
+        if not selected_uris:
+            result["chartHistory"] = {
+                "supported": False,
+                "complete": False,
+                "status": "unconfigured",
+                "reason": "Add songs or artists to your selection to collect chart history.",
+            }
+            return result
+
+        selected_entries = [entry for entry in result["entries"] if entry_entity_uri(entry) in selected_uris]
         if not selected_entries:
             result["chartHistory"] = {
                 "supported": False,
                 "complete": False,
                 "status": "unavailable",
-                "reason": "None of the configured songs appears in this chart selection.",
+                "reason": "None of your selected entities appears in this chart.",
             }
         else:
-            try:
-                selected_payload = {**result, "entries": selected_entries}
-                result["chartHistory"] = await prepare_chart_history(
-                    chart_type,
-                    country.upper(),
-                    date,
-                    selected_payload,
-                    set(TRACK_HISTORY_TRACK_URIS),
-                )
-            except ChartHistoryStorageError:
-                result["chartHistory"] = {
-                    "supported": False,
-                    "complete": False,
-                    "status": "unavailable",
-                    "reason": "Historical storage is unavailable; cumulative totals cannot be calculated right now.",
-                }
+            history_info = await prepare_chart_history(
+                chart_type,
+                country.upper(),
+                date,
+                {**result, "entries": selected_entries},
+                selected_uris,
+            )
+            history_info["metric"] = "rank" if HISTORY_CHART_TYPES[chart_type] == "artist" else "streams"
+            result["chartHistory"] = history_info
+    except ChartHistoryStorageError:
+        result["chartHistory"] = {
+            "supported": False,
+            "complete": False,
+            "status": "unavailable",
+            "reason": "Historical storage is unavailable; snapshots could not be saved.",
+        }
+    except HTTPException as error:
+        if error.status_code != 503:
+            raise
+        result["chartHistory"] = {
+            "supported": False,
+            "complete": False,
+            "status": "unavailable",
+            "reason": "Historical storage is unavailable; snapshots could not be saved.",
+        }
     return result
 
 
@@ -297,27 +597,30 @@ async def chart(
 async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[str, Any]:
     chart_type = request.chart_type
     country = request.country.upper()
-    if chart_type not in SONG_CHART_STEPS:
-        raise HTTPException(status_code=400, detail="Choose a Top Songs chart to backfill stream history.")
+    require_spotify_connection()
+    if chart_type not in HISTORY_CHART_TYPES:
+        raise HTTPException(status_code=400, detail="Choose a supported songs or artists chart to backfill history.")
     if country not in {item.value for item in Countries}:
         raise HTTPException(status_code=400, detail="Choose a country from the list.")
 
-    if not TRACK_HISTORY_TRACK_URIS:
-        raise HTTPException(status_code=409, detail="No songs are configured for history tracking yet.")
+    selected_entities = await read_selected_entities(HISTORY_CHART_TYPES[chart_type])
+    selected_uris = {row["entity_uri"] for row in selected_entities}
+    if not selected_uris:
+        raise HTTPException(status_code=409, detail="Add songs or artists to your selection before backfilling.")
 
-    track_uris = list(dict.fromkeys(request.track_uris))
-    if len(track_uris) > 200 or any(
-        not uri.startswith("spotify:track:") or len(uri) > 128 or uri not in TRACK_HISTORY_TRACK_URIS
-        for uri in track_uris
+    entity_uris = list(dict.fromkeys(request.entity_uris))
+    if len(entity_uris) > 200 or any(
+        not is_valid_entity_uri(uri, HISTORY_CHART_TYPES[chart_type]) or uri not in selected_uris
+        for uri in entity_uris
     ):
-        raise HTTPException(status_code=400, detail="The chart track list is invalid.")
+        raise HTTPException(status_code=400, detail="The selected entity list is invalid.")
 
     try:
         return await run_history_backfill_batch(
             chart_type,
             country,
             request.target_date,
-            track_uris,
+            entity_uris,
             get_spotify_scraper,
         )
     except ChartHistoryStorageError as error:
