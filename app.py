@@ -274,7 +274,7 @@ async def remove_selection(entity_uri: str) -> dict[str, bool]:
 async def search_entities(
     query: str = Query(..., min_length=2, max_length=80),
     entity_type: Literal["all", "track", "artist"] = Query("all"),
-    limit: int = Query(12, ge=1, le=20),
+    limit: int = Query(10, ge=1, le=10),
 ) -> dict[str, Any]:
     scraper = await get_spotify_scraper()
     try:

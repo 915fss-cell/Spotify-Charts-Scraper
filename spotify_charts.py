@@ -105,7 +105,7 @@ class SpotifyCharts:
             raise ValueError("Spotify returned an unexpected chart response.")
         return payload
 
-    async def search_entities(self, query: str, entity_type: str = "all", limit: int = 12) -> list[dict]:
+    async def search_entities(self, query: str, entity_type: str = "all", limit: int = 10) -> list[dict]:
         if entity_type not in {"all", "track", "artist"}:
             raise ValueError("Choose songs, artists, or both to search.")
 

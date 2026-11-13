@@ -155,7 +155,7 @@
     button.textContent = "Searching…";
     setStatus("selection-status", "Searching Spotify…");
     try {
-      const params = new URLSearchParams({ query, entity_type: byId("selection-type").value, limit: "12" });
+      const params = new URLSearchParams({ query, entity_type: byId("selection-type").value, limit: "10" });
       const payload = await requestJson(`/api/search?${params}`);
       searchResults = payload.items || [];
       renderSelections();
