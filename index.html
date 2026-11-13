@@ -144,7 +144,10 @@
       async function continueChartHistory(payload, requestId) {
         const historyInfo = payload.chartHistory;
         if (!historyInfo?.supported || historyInfo.complete) return;
-        const trackUris = (payload.entries || []).map((entry) => entry.trackMetadata?.trackUri).filter(Boolean);
+        const trackUris = (payload.entries || [])
+          .filter((entry) => Object.prototype.hasOwnProperty.call(entry.chartEntryData || {}, "cumulativeChartStreams"))
+          .map((entry) => entry.trackMetadata?.trackUri)
+          .filter(Boolean);
         if (!trackUris.length) return;
         const body = JSON.stringify({
           chart_type: byId("chart-type").value,
@@ -202,7 +205,8 @@
           const image = meta.displayImageUri;
           const titleHtml = link ? `<a class="track-name" href="${escapeHtml(link)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>` : `<span class="track-name">${escapeHtml(title)}</span>`;
           const metric = stats.rankingMetric?.value ? Number(stats.rankingMetric.value).toLocaleString() : "—";
-          const totalStreams = !historyInfo?.supported ? "—" : historyInfo.complete ? Number(stats.cumulativeChartStreams ?? 0).toLocaleString() : historyInfo.status === "paused" ? "Paused" : "Backfilling…";
+          const isTracked = Object.prototype.hasOwnProperty.call(stats, "cumulativeChartStreams");
+          const totalStreams = !isTracked ? "Not tracked" : !historyInfo?.supported ? "Not tracked" : historyInfo.complete ? Number(stats.cumulativeChartStreams ?? 0).toLocaleString() : historyInfo.status === "paused" ? "Paused" : "Backfilling…";
           const trackUri = meta.trackUri || "";
           const movement = chartMovement(stats);
           const releaseDate = meta.releaseDate || "—";

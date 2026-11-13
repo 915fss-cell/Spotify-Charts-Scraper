@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from chart_history import (
     ChartHistoryStorageError,
     close_history_pool,
+    entry_track_uri,
     prepare_chart_history,
     run_history_backfill_batch,
 )
@@ -39,6 +40,8 @@ access_token_expires_at = 0.0
 token_refresh_lock = asyncio.Lock()
 
 SONG_CHART_STEPS = {"daily_top_songs": 1, "weekly_top_songs": 7}
+# Add Spotify track URIs here only after the user identifies songs to track.
+TRACK_HISTORY_TRACK_URIS: frozenset[str] = frozenset()
 
 
 class ChartHistoryBackfillRequest(BaseModel):
@@ -245,15 +248,48 @@ async def chart(
     if not isinstance(result, dict) or not isinstance(result.get("entries"), list):
         raise HTTPException(status_code=502, detail="Spotify returned an unsupported chart format.")
 
-    try:
-        result["chartHistory"] = await prepare_chart_history(chart_type, country.upper(), date, result)
-    except ChartHistoryStorageError:
+    if chart_type not in SONG_CHART_STEPS:
         result["chartHistory"] = {
             "supported": False,
             "complete": False,
-            "status": "unavailable",
-            "reason": "Historical storage is unavailable; cumulative totals cannot be calculated right now.",
+            "status": "unsupported",
+            "reason": "Cumulative chart streams are available for Top Songs charts only.",
         }
+    elif not TRACK_HISTORY_TRACK_URIS:
+        result["chartHistory"] = {
+            "supported": False,
+            "complete": False,
+            "status": "unconfigured",
+            "reason": "Cumulative totals are opt-in; no songs are configured for tracking yet.",
+        }
+    else:
+        selected_entries = [
+            entry for entry in result["entries"] if entry_track_uri(entry) in TRACK_HISTORY_TRACK_URIS
+        ]
+        if not selected_entries:
+            result["chartHistory"] = {
+                "supported": False,
+                "complete": False,
+                "status": "unavailable",
+                "reason": "None of the configured songs appears in this chart selection.",
+            }
+        else:
+            try:
+                selected_payload = {**result, "entries": selected_entries}
+                result["chartHistory"] = await prepare_chart_history(
+                    chart_type,
+                    country.upper(),
+                    date,
+                    selected_payload,
+                    set(TRACK_HISTORY_TRACK_URIS),
+                )
+            except ChartHistoryStorageError:
+                result["chartHistory"] = {
+                    "supported": False,
+                    "complete": False,
+                    "status": "unavailable",
+                    "reason": "Historical storage is unavailable; cumulative totals cannot be calculated right now.",
+                }
     return result
 
 
@@ -266,9 +302,13 @@ async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[s
     if country not in {item.value for item in Countries}:
         raise HTTPException(status_code=400, detail="Choose a country from the list.")
 
+    if not TRACK_HISTORY_TRACK_URIS:
+        raise HTTPException(status_code=409, detail="No songs are configured for history tracking yet.")
+
     track_uris = list(dict.fromkeys(request.track_uris))
     if len(track_uris) > 200 or any(
-        not uri.startswith("spotify:track:") or len(uri) > 128 for uri in track_uris
+        not uri.startswith("spotify:track:") or len(uri) > 128 or uri not in TRACK_HISTORY_TRACK_URIS
+        for uri in track_uris
     ):
         raise HTTPException(status_code=400, detail="The chart track list is invalid.")
 

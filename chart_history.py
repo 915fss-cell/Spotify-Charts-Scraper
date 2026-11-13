@@ -79,7 +79,7 @@ def chart_date_from_payload(payload: dict[str, Any], requested_date: str) -> dat
     return None
 
 
-def _entry_track_uri(entry: dict[str, Any]) -> str | None:
+def entry_track_uri(entry: dict[str, Any]) -> str | None:
     metadata = entry.get("trackMetadata") or {}
     uri = metadata.get("trackUri") or entry.get("trackUri")
     return uri if isinstance(uri, str) and uri.startswith("spotify:track:") else None
@@ -136,12 +136,13 @@ async def save_chart_snapshot(
     country: str,
     chart_date: date,
     entries: list[dict[str, Any]],
+    allowed_track_uris: set[str],
 ) -> int:
     deduplicated: dict[str, tuple[Any, ...]] = {}
     for entry in entries:
-        uri = _entry_track_uri(entry)
+        uri = entry_track_uri(entry)
         values = _snapshot_values(entry)
-        if uri and values:
+        if uri and values and uri in allowed_track_uris:
             track_name, artist_names, streams = values
             deduplicated[uri] = (chart_type, country, chart_date, uri, track_name, artist_names, streams)
 
@@ -332,6 +333,7 @@ async def prepare_chart_history(
     country: str,
     requested_date: str,
     payload: dict[str, Any],
+    allowed_track_uris: set[str],
 ) -> dict[str, Any]:
     if chart_type not in CHART_STEPS:
         return {
@@ -341,7 +343,16 @@ async def prepare_chart_history(
             "reason": "Cumulative chart streams are available for Top Songs charts only.",
         }
 
-    entries = payload.get("entries") or []
+    entries = [
+        entry for entry in payload.get("entries") or [] if entry_track_uri(entry) in allowed_track_uris
+    ]
+    if not entries:
+        return {
+            "supported": False,
+            "complete": False,
+            "status": "unconfigured",
+            "reason": "No configured songs are available in this chart selection.",
+        }
     target_date = chart_date_from_payload(payload, requested_date)
     start_date = first_entry_date(entries)
     if target_date is None or start_date is None:
@@ -354,7 +365,14 @@ async def prepare_chart_history(
 
     pool = await get_history_pool()
     try:
-        saved_count = await save_chart_snapshot(pool, chart_type, country, target_date, entries)
+        saved_count = await save_chart_snapshot(
+            pool,
+            chart_type,
+            country,
+            target_date,
+            entries,
+            allowed_track_uris=allowed_track_uris,
+        )
         if saved_count == 0:
             return {
                 "supported": False,
@@ -366,12 +384,12 @@ async def prepare_chart_history(
         progress = await get_backfill_progress(pool, chart_type, country, target_date)
         totals: dict[str, int] = {}
         if progress["complete"]:
-            uris = [uri for entry in entries if (uri := _entry_track_uri(entry))]
+            uris = [uri for entry in entries if (uri := entry_track_uri(entry))]
             totals = await get_stream_totals(pool, chart_type, country, target_date, uris)
 
         for entry in entries:
             stats = entry.setdefault("chartEntryData", {})
-            uri = _entry_track_uri(entry)
+            uri = entry_track_uri(entry)
             stats["cumulativeChartStreams"] = totals.get(uri, 0) if progress["complete"] and uri else None
         return progress
     except ChartHistoryStorageError:
@@ -402,6 +420,8 @@ async def run_history_backfill_batch(
 ) -> dict[str, Any]:
     if chart_type not in CHART_STEPS:
         raise HTTPException(status_code=400, detail="Choose a Top Songs chart to backfill stream history.")
+    if not track_uris:
+        raise HTTPException(status_code=409, detail="No songs are configured for history tracking yet.")
 
     pool = await get_history_pool()
     step = CHART_STEPS[chart_type]
@@ -472,7 +492,15 @@ async def run_history_backfill_batch(
         if not isinstance(historical_entries, list):
             await _pause_job(pool, chart_type, country, "Spotify returned an unsupported historical chart response.")
             break
-        if historical_entries and await save_chart_snapshot(pool, chart_type, country, chart_day, historical_entries) == 0:
+        tracked_entries = [entry for entry in historical_entries if entry_track_uri(entry) in track_uris]
+        if tracked_entries and await save_chart_snapshot(
+            pool,
+            chart_type,
+            country,
+            chart_day,
+            tracked_entries,
+            allowed_track_uris=set(track_uris),
+        ) == 0:
             await _pause_job(pool, chart_type, country, "Spotify did not include stream counts in a historical chart response.")
             break
 
