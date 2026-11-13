@@ -156,6 +156,10 @@
       authChannel?.addEventListener("message", (event) => {
         if (event.data === "connected") loadStatus();
       });
+      window.addEventListener("focus", loadStatus);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) loadStatus();
+      });
       async function loadCountries() {
         const countries = await requestJson("/api/countries");
         for (const id of ["country", "live-country", "history-country"]) {

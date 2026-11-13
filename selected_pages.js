@@ -13,6 +13,9 @@
   let searchResults = [];
   let historyChart = null;
   let liveRequest = 0;
+  let activePage = "charts";
+  let connectionRefreshInFlight = false;
+  const authChannel = "BroadcastChannel" in window ? new BroadcastChannel("spotify-charts-auth") : null;
 
   function setStatus(id, message, isError = false) {
     const element = byId(id);
@@ -145,6 +148,31 @@
       throw error;
     }
   }
+
+  async function refreshAfterConnection() {
+    if (connectionRefreshInFlight) return;
+    connectionRefreshInFlight = true;
+    try {
+      const status = await requestJson("/api/status");
+      if (!status.connected) return;
+      await loadSelections();
+      if (activePage === "live") await loadLiveData();
+      if (activePage === "history") await loadHistory();
+    } catch (error) {
+      if (activePage === "live") setStatus("live-status", error.message, true);
+      if (activePage === "history") setStatus("history-status", error.message, true);
+    } finally {
+      connectionRefreshInFlight = false;
+    }
+  }
+
+  authChannel?.addEventListener("message", (event) => {
+    if (event.data === "connected") refreshAfterConnection();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshAfterConnection();
+  });
+  window.addEventListener("focus", refreshAfterConnection);
 
   async function searchSpotify(event) {
     event.preventDefault();
@@ -364,6 +392,7 @@
 
   function activatePage(page) {
     const validPage = ["charts", "live", "history"].includes(page) ? page : "charts";
+    activePage = validPage;
     document.querySelectorAll("[data-page-panel]").forEach((panel) => {
       panel.hidden = panel.dataset.pagePanel !== validPage;
     });
@@ -410,7 +439,7 @@
   });
   byId("live-connect").addEventListener("click", () => {
     window.open("/auth/login", "_blank", "noopener,noreferrer");
-    setStatus("live-status", "Spotify sign-in opened in a new tab. Complete authorization there, then refresh live data.");
+    setStatus("live-status", "Spotify sign-in opened in a new tab. Return here after authorization; this page will refresh automatically.");
   });
   byId("history-controls").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -427,7 +456,7 @@
   byId("history-refresh").addEventListener("click", loadHistory);
   byId("history-connect").addEventListener("click", () => {
     window.open("/auth/login", "_blank", "noopener,noreferrer");
-    setStatus("history-status", "Spotify sign-in opened in a new tab. Complete authorization there, then refresh history.");
+    setStatus("history-status", "Spotify sign-in opened in a new tab. Return here after authorization; this page will refresh automatically.");
   });
   byId("history-backfill").addEventListener("click", backfillHistory);
   populateHistoryEntities();
