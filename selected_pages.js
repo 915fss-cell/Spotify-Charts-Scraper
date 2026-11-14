@@ -494,7 +494,6 @@
       "live-weekly-songs": { cadence: "weekly", entityType: "track", title: "Weekly top songs", type: "songs" },
       "live-daily-artists": { cadence: "daily", entityType: "artist", title: "Daily top artists", type: "artists" },
       "live-weekly-artists": { cadence: "weekly", entityType: "artist", title: "Weekly top artists", type: "artists" },
-      "live-daily-albums": { cadence: "daily", entityType: "album", title: "Daily top albums", type: "albums" },
       "live-weekly-albums": { cadence: "weekly", entityType: "album", title: "Weekly top albums", type: "albums" },
     };
     const routeKey = page === "live" ? "live-daily-songs" : page;
