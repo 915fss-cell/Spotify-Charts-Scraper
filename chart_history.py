@@ -187,6 +187,7 @@ async def save_chart_snapshot(
     chart_date: date,
     entries: list[dict[str, Any]],
     allowed_entity_uris: set[str] | None = None,
+    connection: asyncpg.Connection | None = None,
 ) -> int:
     deduplicated: dict[str, tuple[Any, ...]] = {}
     for entry in entries:
@@ -225,30 +226,19 @@ async def save_chart_snapshot(
     if not deduplicated:
         return 0
 
-    async with pool.acquire() as connection:
-        await connection.executemany(
-            """
-            INSERT INTO public.spotify_chart_snapshots
-                (chart_type, country_code, chart_date, track_uri, track_name, artist_names,
-                 stream_count, entity_type, chart_rank, previous_rank, peak_rank,
-                 consecutive_appearances, appearances, entry_date)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-            ON CONFLICT (chart_type, country_code, chart_date, track_uri)
-            DO UPDATE SET
-                track_name = EXCLUDED.track_name,
-                artist_names = EXCLUDED.artist_names,
-                stream_count = EXCLUDED.stream_count,
-                entity_type = EXCLUDED.entity_type,
-                chart_rank = EXCLUDED.chart_rank,
-                previous_rank = EXCLUDED.previous_rank,
-                peak_rank = EXCLUDED.peak_rank,
-                consecutive_appearances = EXCLUDED.consecutive_appearances,
-                appearances = EXCLUDED.appearances,
-                entry_date = EXCLUDED.entry_date,
-                fetched_at = now()
-            """,
-            list(deduplicated.values()),
-        )
+    query = """
+        INSERT INTO public.spotify_chart_snapshots
+            (chart_type, country_code, chart_date, track_uri, track_name, artist_names,
+             stream_count, entity_type, chart_rank, previous_rank, peak_rank,
+             consecutive_appearances, appearances, entry_date)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        ON CONFLICT (chart_type, country_code, chart_date, track_uri) DO NOTHING
+    """
+    if connection is not None:
+        await connection.executemany(query, list(deduplicated.values()))
+    else:
+        async with pool.acquire() as acquired:
+            await acquired.executemany(query, list(deduplicated.values()))
     return len(deduplicated)
 
 
@@ -299,7 +289,7 @@ async def ensure_backfill_job(
                 old_next = existing["next_date"]
                 new_start = min(start_date, old_start)
                 new_target = max(target_date, old_target)
-                reset = new_start < old_start or existing["selection_fingerprint"] != selection_fingerprint
+                reset = new_start < old_start
                 next_date = new_start if reset else old_next
                 processed_dates = 0 if reset else existing["processed_dates"]
                 status = existing["status"]
@@ -361,7 +351,7 @@ async def get_backfill_progress(
     job = await pool.fetchrow(
         """
         SELECT start_date, target_date, next_date, processed_dates, total_dates,
-               status, last_error
+               succeeded_dates, unavailable_dates, retry_dates, status, last_error
         FROM public.spotify_chart_backfills
         WHERE chart_type = $1 AND country_code = $2
         """,
@@ -369,7 +359,7 @@ async def get_backfill_progress(
         country,
     )
     if job is None:
-        return {"supported": True, "complete": False, "status": "pending", "processedDates": 0, "totalDates": 0}
+        return {"supported": True, "complete": False, "status": "pending", "processedDates": 0, "totalDates": 0, "succeededDates": 0, "unavailableDates": 0, "retryDates": 0}
 
     step = CHART_STEPS[chart_type]
     requested_end = min(target_date, job["target_date"])
@@ -386,6 +376,9 @@ async def get_backfill_progress(
         "nextDate": job["next_date"].isoformat(),
         "processedDates": processed_dates,
         "totalDates": total_dates,
+        "succeededDates": job["succeeded_dates"],
+        "unavailableDates": job["unavailable_dates"],
+        "retryDates": job["retry_dates"],
         "error": job["last_error"],
     }
 
@@ -575,6 +568,204 @@ async def run_history_backfill_batch(
         progress = await get_backfill_progress(pool, chart_type, country, target_date)
         totals = await get_stream_totals(pool, chart_type, country, target_date, total_entity_uris) if progress["complete"] and total_entity_uris else {}
         return {**progress, "totals": totals}
+
+
+async def run_durable_history_backfill_batch(
+    chart_type: str,
+    country: str,
+    target_date: date,
+    start_date: date,
+    total_entity_uris: list[str] | None,
+    scraper_factory: Callable[[], Awaitable[SpotifyCharts]],
+    target_entity_uris: list[str] | None = None,
+) -> dict[str, Any]:
+    import json
+    import secrets
+
+    if chart_type not in CHART_STEPS:
+        raise HTTPException(status_code=400, detail="Choose a supported chart type to backfill history.")
+
+    pool = await get_history_pool()
+    step = CHART_STEPS[chart_type]
+    start_date = min(start_date, target_date)
+    if step == 7 and start_date < target_date:
+        start_date += timedelta(days=(target_date.weekday() - start_date.weekday()) % 7)
+    allowed_uris = set(target_entity_uris or []) or None
+    fingerprint = (
+        "all-chart-entries"
+        if allowed_uris is None
+        else hashlib.sha256("\\n".join(sorted(allowed_uris)).encode("utf-8")).hexdigest()
+    )
+    await ensure_backfill_job(pool, chart_type, country, start_date, target_date, fingerprint)
+    owner = secrets.token_urlsafe(18)
+
+    async with pool.acquire() as connection:
+        claim = await connection.fetchrow(
+            """UPDATE public.spotify_chart_backfills
+               SET status = 'running', lease_expires_at = now() + $4::interval,
+                   last_error = NULL, updated_at = now()
+               WHERE chart_type = $1 AND country_code = $2 AND next_date <= $3
+                 AND (status <> 'running' OR lease_expires_at IS NULL OR lease_expires_at < now())
+               RETURNING next_date, target_date""",
+            chart_type, country, target_date, LEASE_DURATION,
+        )
+
+    if claim is None:
+        progress = await get_backfill_progress(pool, chart_type, country, target_date)
+        totals = await get_stream_totals(pool, chart_type, country, target_date, total_entity_uris or []) if progress["complete"] else {}
+        return {**progress, "totals": totals}
+
+    try:
+        scraper = await scraper_factory()
+    except HTTPException:
+        await _pause_job(pool, chart_type, country, "Spotify authorization needs attention. Reconnect and reload to resume.")
+        raise
+
+    cursor = claim["next_date"]
+    batch_end = min(target_date, claim["target_date"])
+    dates = [cursor + timedelta(days=step * index) for index in range(BACKFILL_BATCH_SIZE)]
+    dates = [day for day in dates if day <= batch_end]
+
+    for chart_day in dates:
+        error_message: str | None = None
+        http_status: int | None = None
+        requested = chart_day.isoformat()
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """INSERT INTO public.spotify_chart_refresh_jobs
+                     (chart_type, country_code, requested_date, chart_date, status)
+                   VALUES ($1, $2, $3, $4, 'pending') ON CONFLICT DO NOTHING""",
+                chart_type, country, requested, chart_day,
+            )
+            cached = await connection.fetchrow(
+                """SELECT payload FROM public.spotify_chart_payload_cache
+                   WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3""",
+                chart_type, country, requested,
+            )
+            job = await connection.fetchrow(
+                """UPDATE public.spotify_chart_refresh_jobs
+                   SET status = 'running', lease_owner = $4,
+                       lease_expires_at = now() + $5::interval,
+                       attempt_count = attempt_count + 1, updated_at = now()
+                   WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3
+                     AND status NOT IN ('succeeded', 'unavailable', 'complete')
+                     AND next_attempt_at <= now()
+                     AND (status <> 'running' OR lease_expires_at IS NULL OR lease_expires_at < now())
+                   RETURNING attempt_count""",
+                chart_type, country, requested, owner, LEASE_DURATION,
+            )
+            prior = await connection.fetchrow(
+                """SELECT status FROM public.spotify_chart_refresh_jobs
+                   WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3""",
+                chart_type, country, requested,
+            )
+
+        if job is None:
+            if prior and prior["status"] in {"succeeded", "unavailable", "complete"}:
+                async with pool.acquire() as connection:
+                    async with connection.transaction():
+                        await connection.execute(
+                            """UPDATE public.spotify_chart_backfills SET next_date = $1,
+                                 processed_dates = processed_dates + 1,
+                                 succeeded_dates = succeeded_dates + CASE WHEN $2 = 'unavailable' THEN 0 ELSE 1 END,
+                                 unavailable_dates = unavailable_dates + CASE WHEN $2 = 'unavailable' THEN 1 ELSE 0 END,
+                                 updated_at = now()
+                               WHERE chart_type = $3 AND country_code = $4 AND next_date = $5""",
+                            chart_day + timedelta(days=step), prior["status"], chart_type, country, chart_day,
+                        )
+                continue
+            break
+
+        try:
+            if cached:
+                payload = cached["payload"]
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+            else:
+                payload = await getattr(scraper, chart_type)(country, requested)
+            entries = payload.get("entries") if isinstance(payload, dict) else None
+            payload_chart = (payload.get("displayChart") or {}).get("date") if isinstance(payload, dict) else None
+            if payload_chart is None and isinstance(payload, dict):
+                payload_chart = payload.get("date")
+            response_date = parse_chart_date(payload_chart)
+            if not isinstance(entries, list) or response_date is None:
+                raise ValueError("Spotify returned an incomplete historical chart payload.")
+        except httpx.HTTPStatusError as error:
+            http_status = error.response.status_code
+            error_message = f"Spotify returned HTTP {http_status}; the date was not classified as unavailable."
+        except Exception:
+            error_message = "Spotify chart fetch or payload validation failed."
+
+        if error_message is not None:
+            attempt = int(job["attempt_count"])
+            retry_delay = min(3600, 30 * (2 ** min(max(attempt - 1, 0), 7)))
+            async with pool.acquire() as connection:
+                async with connection.transaction():
+                    await connection.execute(
+                        """UPDATE public.spotify_chart_refresh_jobs SET status = 'retry',
+                             next_attempt_at = now() + ($5::double precision * interval '1 second'),
+                             last_error = $6, last_http_status = $7,
+                             lease_owner = NULL, lease_expires_at = NULL,
+                             completed_at = NULL, updated_at = now()
+                           WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3 AND lease_owner = $4""",
+                        chart_type, country, requested, owner, retry_delay, error_message, http_status,
+                    )
+                    await connection.execute(
+                        """UPDATE public.spotify_chart_backfills SET retry_dates = retry_dates + 1,
+                             status = 'pending', lease_expires_at = NULL,
+                             last_error = $1, updated_at = now()
+                           WHERE chart_type = $2 AND country_code = $3""",
+                        error_message, chart_type, country,
+                    )
+            break
+
+        try:
+            async with pool.acquire() as connection:
+                async with connection.transaction():
+                    await connection.execute(
+                        """INSERT INTO public.spotify_chart_payload_cache
+                             (chart_type, country_code, requested_date, payload, chart_date, fetched_at)
+                           VALUES ($1, $2, $3, $4::jsonb, $5, now())
+                           ON CONFLICT (chart_type, country_code, requested_date) DO NOTHING""",
+                        chart_type, country, requested, json.dumps(payload, separators=(",", ":")), response_date,
+                    )
+                    await save_chart_snapshot(pool, chart_type, country, response_date, entries, allowed_uris, connection)
+                    await connection.execute(
+                        """UPDATE public.spotify_chart_refresh_jobs SET status = 'succeeded',
+                             response_chart_date = $5, completed_at = now(), fetched_at = now(),
+                             last_error = NULL, lease_owner = NULL, lease_expires_at = NULL,
+                             updated_at = now()
+                           WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3 AND lease_owner = $4""",
+                        chart_type, country, requested, owner, response_date,
+                    )
+                    await connection.execute(
+                        """UPDATE public.spotify_chart_backfills SET next_date = $1,
+                             processed_dates = processed_dates + 1, succeeded_dates = succeeded_dates + 1,
+                             updated_at = now()
+                           WHERE chart_type = $2 AND country_code = $3 AND next_date = $4""",
+                        chart_day + timedelta(days=step), chart_type, country, chart_day,
+                    )
+        except Exception:
+            async with pool.acquire() as connection:
+                await connection.execute(
+                    """UPDATE public.spotify_chart_refresh_jobs SET status = 'retry',
+                         next_attempt_at = now() + interval '30 seconds', last_error = 'Snapshot persistence failed.',
+                         lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+                       WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3 AND lease_owner = $4""",
+                    chart_type, country, requested, owner,
+                )
+            break
+
+    await pool.execute(
+        """UPDATE public.spotify_chart_backfills SET
+             status = CASE WHEN next_date > target_date THEN 'complete' ELSE 'pending' END,
+             lease_expires_at = NULL, updated_at = now()
+           WHERE chart_type = $1 AND country_code = $2 AND status = 'running'""",
+        chart_type, country,
+    )
+    progress = await get_backfill_progress(pool, chart_type, country, target_date)
+    totals = await get_stream_totals(pool, chart_type, country, target_date, total_entity_uris or []) if progress["complete"] else {}
+    return {**progress, "totals": totals}
 
     try:
         scraper = await scraper_factory()
