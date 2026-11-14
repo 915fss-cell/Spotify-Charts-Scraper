@@ -563,6 +563,44 @@ def focused_chart_item(entry: dict[str, Any], country_code: str, chart_date: str
     }
 
 
+focused_chart_scan_tasks: dict[tuple[str, str, str], asyncio.Task] = {}
+
+
+def pending_focused_scan(cadence: str, entity_type: str) -> dict[str, Any]:
+    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+    return {
+        "artist": {"entityName": FOCUSED_ARTIST_NAME},
+        "cadence": cadence,
+        "entityType": entity_type,
+        "chartType": chart_type,
+        "marketScope": "all",
+        "marketsTotal": len(Countries),
+        "marketsScanned": 0,
+        "matchingRegions": 0,
+        "failedRegions": [],
+        "historySavedRegions": 0,
+        "historyStorageAvailable": None,
+        "releases": [],
+        "regions": [],
+        "scanInProgress": True,
+    }
+
+
+async def run_focused_scan_and_cache(cache_key: tuple[str, str, str], cadence: str, entity_type: str, scope: str) -> None:
+    try:
+        response = await scan_focused_live(cadence, entity_type, scope)
+    except Exception as error:
+        response = pending_focused_scan(cadence, entity_type)
+        response.update({
+            "scanInProgress": False,
+            "scanError": str(error.detail if isinstance(error, HTTPException) else error) or "Spotify could not load the regional charts. Try again shortly.",
+            "failedRegions": [country.name.replace("_", " ").title() for country in Countries],
+        })
+    async with focused_chart_cache_lock:
+        focused_chart_cache[cache_key] = (time.monotonic(), response)
+        focused_chart_scan_tasks.pop(cache_key, None)
+
+
 @app.get("/api/focused/live")
 async def focused_live(
     cadence: Literal["daily", "weekly"] = Query("daily"),
@@ -574,9 +612,26 @@ async def focused_live(
     cache_key = (cadence, entity_type, scope)
     async with focused_chart_cache_lock:
         cached = focused_chart_cache.get(cache_key)
-        if not refresh and cached and time.monotonic() - cached[0] < FOCUSED_CHART_CACHE_TTL:
+        cache_ttl = 15 if cached and cached[1].get("scanError") else FOCUSED_CHART_CACHE_TTL
+        if not refresh and cached and time.monotonic() - cached[0] < cache_ttl:
             return cached[1]
+        if scope == "all":
+            if refresh:
+                focused_chart_cache.pop(cache_key, None)
+            task = focused_chart_scan_tasks.get(cache_key)
+            if task is None or task.done():
+                task = asyncio.create_task(run_focused_scan_and_cache(cache_key, cadence, entity_type, scope))
+                focused_chart_scan_tasks[cache_key] = task
+            return pending_focused_scan(cadence, entity_type)
 
+    response = await scan_focused_live(cadence, entity_type, scope)
+    async with focused_chart_cache_lock:
+        focused_chart_cache[cache_key] = (time.monotonic(), response)
+    return response
+
+
+async def scan_focused_live(cadence: str, entity_type: str, scope: str) -> dict[str, Any]:
+    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
     scraper = await get_spotify_scraper()
     method = getattr(scraper, CHART_METHODS[chart_type])
     markets = [Countries.GLOBAL] if scope == "global" else list(Countries)
@@ -652,7 +707,7 @@ async def focused_live(
     regions.sort(key=lambda region: (region["regionCode"] != "GLOBAL", region["regionName"]))
     release_items = list(releases.values())
     release_items.sort(key=lambda release: (-len(release["regions"]), release["entityName"].casefold()))
-    response = {
+    return {
         "artist": {"entityName": FOCUSED_ARTIST_NAME},
         "cadence": cadence,
         "entityType": entity_type,
@@ -666,10 +721,8 @@ async def focused_live(
         "historyStorageAvailable": history_storage_available,
         "releases": release_items,
         "regions": regions,
+        "scanInProgress": False,
     }
-    async with focused_chart_cache_lock:
-        focused_chart_cache[cache_key] = (time.monotonic(), response)
-    return response
 
 
 def history_start_date(range_value: str) -> calendar_date | None:

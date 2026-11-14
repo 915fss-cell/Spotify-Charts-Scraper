@@ -250,6 +250,22 @@
     };
   }
 
+  async function fetchAllRegionsOverview(cadence, entityType, refresh = false) {
+    const params = new URLSearchParams({ cadence, entity_type: entityType, scope: "all" });
+    let refreshScan = refresh;
+    while (true) {
+      if (refreshScan) params.set("refresh", "true");
+      const payload = await requestJson(`/api/focused/live?${params}`);
+      params.delete("refresh");
+      refreshScan = false;
+      if (payload.scanError) throw new Error(payload.scanError);
+      if (!payload.scanInProgress) return payload;
+      if (state.cadence !== cadence || state.entityType !== entityType) throw new Error("The chart selection changed while regions were loading.");
+      setStatus("live-status", "Global chart is loaded. The regional scan is running in the background and will update automatically.");
+      await new Promise((resolve) => window.setTimeout(resolve, 3000));
+    }
+  }
+
   async function fetchLiveOverview(refresh = false) {
     let payload;
     if (state.marketScope === "global") {
@@ -259,9 +275,7 @@
       const chart = cachedChart || await requestJson(`/api/charts?${params}`);
       payload = buildGlobalOverview(chart);
     } else {
-      const params = new URLSearchParams({ cadence: state.cadence, entity_type: state.entityType, scope: "all" });
-      if (refresh) params.set("refresh", "true");
-      payload = await requestJson(`/api/focused/live?${params}`);
+      payload = await fetchAllRegionsOverview(state.cadence, state.entityType, refresh);
     }
     liveOverview = payload;
     liveKey = currentKey();
@@ -273,14 +287,13 @@
     isAutoRegionScanning = true;
     const cadence = state.cadence;
     const entityType = state.entityType;
-    const params = new URLSearchParams({ cadence, entity_type: entityType, scope: "all" });
     const button = byId("live-refresh");
     button.disabled = true;
     button.textContent = "Scanning regions…";
     setStatus("live-status", `Global chart loaded. Scanning all regions for ${focusedSelectionName()} ${entityTypeName()} charts…`);
 
     try {
-      const payload = await requestJson(`/api/focused/live?${params}`);
+      const payload = await fetchAllRegionsOverview(cadence, entityType);
       if (requestId !== liveRequest || activePage !== "live" || state.cadence !== cadence || state.entityType !== entityType) return;
       state.marketScope = "all";
       liveOverview = payload;
@@ -301,6 +314,7 @@
   }
 
   async function loadFocusedLive(refresh = false) {
+    isAutoRegionScanning = false;
     const requestId = ++liveRequest;
     byId("live-refresh").disabled = true;
     byId("live-refresh").textContent = state.marketScope === "global" ? "Loading Global…" : "Loading regions…";
@@ -504,9 +518,8 @@
   });
 
   byId("live-refresh").addEventListener("click", () => {
-    const refresh = state.marketScope === "all";
     state.marketScope = "all";
-    loadFocusedLive(refresh);
+    loadFocusedLive(true);
   });
   byId("history-refresh").addEventListener("click", () => loadFocusedHistory(true));
   byId("history-range").addEventListener("change", () => loadFocusedHistory());
