@@ -153,6 +153,7 @@ class ChartHistoryBackfillRequest(BaseModel):
     target_date: calendar_date
     start_date: calendar_date
     entity_uris: list[str] = Field(default_factory=list, max_length=200)
+    target_entity_uris: list[str] | None = Field(default=None, max_length=200)
 
 
 class SelectionInput(BaseModel):
@@ -1339,7 +1340,8 @@ async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[s
         raise HTTPException(status_code=400, detail="Choose a country from the list.")
 
     entity_uris = list(dict.fromkeys(request.entity_uris))
-    if any(not is_valid_entity_uri(uri, HISTORY_CHART_TYPES[chart_type]) for uri in entity_uris):
+    target_entity_uris = list(dict.fromkeys(request.target_entity_uris or [])) or None
+    if any(not is_valid_entity_uri(uri, HISTORY_CHART_TYPES[chart_type]) for uri in entity_uris + (target_entity_uris or [])):
         raise HTTPException(status_code=400, detail="The chart entity list is invalid.")
 
     try:
@@ -1350,6 +1352,7 @@ async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[s
             request.start_date,
             entity_uris,
             get_spotify_scraper,
+            target_entity_uris=target_entity_uris,
         )
     except ChartHistoryStorageError as error:
         raise HTTPException(status_code=503, detail="Historical storage is unavailable.") from error
