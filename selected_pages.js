@@ -469,8 +469,9 @@
   });
 
   byId("live-refresh").addEventListener("click", () => {
+    const refresh = state.marketScope === "all";
     state.marketScope = "all";
-    loadFocusedLive(true);
+    loadFocusedLive(refresh);
   });
   byId("history-refresh").addEventListener("click", () => loadFocusedHistory(true));
   byId("history-range").addEventListener("change", () => loadFocusedHistory());
