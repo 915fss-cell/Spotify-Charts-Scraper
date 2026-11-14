@@ -496,9 +496,11 @@
       "live-weekly-artists": { cadence: "weekly", entityType: "artist", title: "Weekly top artists", type: "artists" },
       "live-weekly-albums": { cadence: "weekly", entityType: "album", title: "Weekly top albums", type: "albums" },
     };
-    const routeKey = page === "live" ? "live-daily-songs" : page;
+    const historyRouteKey = page.startsWith("history-") ? page.replace(/^history-/, "live-") : "";
+    const routeKey = page === "live" ? "live-daily-songs" : historyRouteKey || page;
     const route = liveRoutes[routeKey];
-    const validPage = route ? "live" : ["charts", "history"].includes(page) ? page : "charts";
+    const isChartHistory = Boolean(route && historyRouteKey);
+    const validPage = route ? (isChartHistory ? "history" : "live") : ["charts", "history"].includes(page) ? page : "charts";
     if (route) {
       state.cadence = route.cadence;
       state.entityType = route.entityType;
@@ -508,9 +510,37 @@
       byId("live-eyebrow").textContent = `${route.title} chart`;
       byId("live-description").textContent = `Follow Taylor Swift and Felix, plus the song Unfair, on the Global ${route.title.toLowerCase()} chart.`;
       byId("live-view-control").hidden = route.entityType === "artist";
+      byId("history-title-label").textContent = isChartHistory ? `${route.title} history` : "History";
+      byId("history-eyebrow").textContent = isChartHistory ? `${route.title} history` : "Artist chart history";
+      byId("history-description").textContent = isChartHistory
+        ? `Saved ${route.title.toLowerCase()} snapshots for Taylor Swift, Felix, and Unfair across every region.`
+        : "Saved chart history for Taylor Swift, Felix, and Unfair across every region.";
       updateFocusControls();
       updateLiveActionLabel();
+    } else if (page === "history") {
+      state.cadence = "daily";
+      state.entityType = "track";
+      state.view = "release";
+      state.marketScope = "global";
+      byId("history-title-label").textContent = "History";
+      byId("history-eyebrow").textContent = "Artist chart history";
+      byId("history-description").textContent = "Saved chart history for Taylor Swift, Felix, and Unfair across every region.";
+      updateFocusControls();
     }
+    document.querySelectorAll("[data-chart-tabs]").forEach((tabs) => {
+      const showTabs = Boolean(route && (validPage === "live" || isChartHistory));
+      tabs.hidden = !showTabs;
+      if (!showTabs) return;
+      tabs.querySelector('[data-chart-tab="live"]').href = `#${routeKey}`;
+      tabs.querySelector('[data-chart-tab="history"]').href = `#history-${routeKey.replace(/^live-/, "")}`;
+      tabs.querySelectorAll("[data-chart-tab]").forEach((tab) => {
+        const selected = tab.dataset.chartTab === (validPage === "history" ? "history" : "live");
+        if (selected) tab.setAttribute("aria-current", "page");
+        else tab.removeAttribute("aria-current");
+      });
+    });
+    byId("history-cadence-control").hidden = isChartHistory;
+    byId("history-entity-control").hidden = isChartHistory;
     activePage = validPage;
     document.querySelectorAll("[data-page-panel]").forEach((panel) => {
       panel.hidden = panel.dataset.pagePanel !== validPage;
