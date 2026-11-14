@@ -132,19 +132,20 @@ class SpotifyCharts:
                 response = await client.get(url, headers=self.headers)
                 if response.status_code not in {429, 500, 502, 503, 504}:
                     response.raise_for_status()
+                    payload = response.json()
                     break
-                if attempt == 2:
-                    response.raise_for_status()
+
                 retry_after = response.headers.get("Retry-After")
                 try:
                     delay = max(float(retry_after), 0.25)
                 except (TypeError, ValueError):
                     delay = 0.5 * (2**attempt)
-            if response.status_code == 429:
-                await _defer_chart_requests(min(delay, CHART_RATE_LIMIT_MAX_COOLDOWN))
-                response.raise_for_status()
-            await asyncio.sleep(delay)
-            payload = response.json()
+
+                if response.status_code == 429:
+                    await _defer_chart_requests(min(delay, CHART_RATE_LIMIT_MAX_COOLDOWN))
+                if attempt == 2:
+                    response.raise_for_status()
+                await asyncio.sleep(delay)
         if not isinstance(payload, dict):
             raise ValueError("Spotify returned an unexpected chart response.")
 
