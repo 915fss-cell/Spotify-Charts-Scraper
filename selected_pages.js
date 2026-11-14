@@ -160,7 +160,9 @@
     const failures = payload.failedRegions?.length || 0;
     const marketMessage = payload.marketScope === "global"
       ? "Global chart loaded. Scan all regions to find more placements."
-      : `${payload.marketsScanned} of ${payload.marketsTotal} markets scanned.`;
+      : payload.snapshotReused
+        ? `Today’s saved results loaded from History (${payload.marketsScanned} of ${payload.marketsTotal} markets).`
+        : `${payload.marketsScanned} of ${payload.marketsTotal} markets scanned.`;
     const regionLabel = payload.matchingRegions === 1 ? "region" : "regions";
     const message = `${payload.artist.entityName}: ${payload.matchingRegions} ${regionLabel} charting ${entityTypeName()}s in the ${state.cadence} charts. ${marketMessage}`;
     const storageMessage = payload.historyStorageAvailable == null

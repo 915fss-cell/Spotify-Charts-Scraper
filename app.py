@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -586,9 +587,121 @@ def pending_focused_scan(cadence: str, entity_type: str) -> dict[str, Any]:
     }
 
 
+async def load_focused_snapshot(cadence: str, entity_type: str) -> dict[str, Any] | None:
+    pool = await get_history_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT payload, fetched_at
+        FROM public.spotify_focused_chart_snapshots
+        WHERE cadence = $1 AND entity_type = $2 AND market_scope = 'all'
+          AND snapshot_date = CURRENT_DATE
+        """,
+        cadence,
+        entity_type,
+    )
+    if row is not None:
+        payload = row["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if isinstance(payload, dict):
+            cached_payload = dict(payload)
+            cached_payload["snapshotReused"] = True
+            cached_payload["snapshotFetchedAt"] = row["fetched_at"].isoformat()
+            return cached_payload
+
+    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+    market_codes = [country.value for country in Countries]
+    fresh_markets = await pool.fetch(
+        """
+        SELECT country_code, max(fetched_at) AS fetched_at
+        FROM public.spotify_chart_snapshots
+        WHERE chart_type = $1 AND country_code = ANY($2::text[])
+          AND fetched_at >= date_trunc('day', now())
+        GROUP BY country_code
+        """,
+        chart_type,
+        market_codes,
+    )
+    if len(fresh_markets) < max(2, len(market_codes) // 2):
+        return None
+
+    rows = await pool.fetch(
+        f"""
+        SELECT DISTINCT ON (country_code, track_uri)
+            track_uri, entity_type, track_name, artist_names, country_code,
+            chart_date, chart_rank, stream_count, fetched_at
+        FROM public.spotify_chart_snapshots
+        WHERE chart_type = $1 AND entity_type = $2 AND country_code = ANY($3::text[])
+          AND fetched_at >= date_trunc('day', now())
+          AND ($4::date IS NULL OR chart_date >= $4::date)
+          AND {focused_history_filter_sql()}
+        ORDER BY country_code, track_uri, fetched_at DESC, chart_date DESC
+        """,
+        chart_type,
+        entity_type,
+        market_codes,
+        None,
+        FOCUSED_ARTIST_URIS,
+        FOCUSED_TRACK_URI,
+        FOCUSED_ARTIST_NAMES,
+    )
+    points = [history_point(snapshot) for snapshot in rows]
+    releases, regions = group_history_points(points)
+    updated_markets = {market["country_code"] for market in fresh_markets}
+    failed_regions = [
+        COUNTRY_NAMES.get(country.value, country.value)
+        for country in Countries
+        if country.value not in updated_markets
+    ]
+    cached_payload = {
+        "artist": {"entityName": FOCUSED_ARTIST_NAME},
+        "cadence": cadence,
+        "entityType": entity_type,
+        "chartType": chart_type,
+        "marketScope": "all",
+        "marketsTotal": len(market_codes),
+        "marketsScanned": len(updated_markets),
+        "matchingRegions": len(regions),
+        "failedRegions": failed_regions,
+        "historySavedRegions": len(updated_markets),
+        "historyStorageAvailable": True,
+        "releases": releases,
+        "regions": regions,
+        "scanInProgress": False,
+        "snapshotReused": True,
+        "snapshotFetchedAt": max(market["fetched_at"] for market in fresh_markets).isoformat(),
+    }
+    if not rows:
+        return None
+    await save_focused_snapshot(cadence, entity_type, cached_payload)
+    return cached_payload
+
+
+async def save_focused_snapshot(cadence: str, entity_type: str, payload: dict[str, Any]) -> None:
+    pool = await get_history_pool()
+    await pool.execute(
+        """
+        INSERT INTO public.spotify_focused_chart_snapshots
+            (cadence, entity_type, market_scope, snapshot_date, payload, fetched_at)
+        VALUES ($1, $2, 'all', CURRENT_DATE, $3::jsonb, now())
+        ON CONFLICT (cadence, entity_type, market_scope, snapshot_date)
+        DO UPDATE SET payload = EXCLUDED.payload, fetched_at = EXCLUDED.fetched_at
+        """,
+        cadence,
+        entity_type,
+        json.dumps(payload, separators=(",", ":")),
+    )
+
+
 async def run_focused_scan_and_cache(cache_key: tuple[str, str, str], cadence: str, entity_type: str, scope: str) -> None:
     try:
         response = await scan_focused_live(cadence, entity_type, scope)
+        if scope == "all" and response["marketsScanned"] > 0:
+            try:
+                await save_focused_snapshot(cadence, entity_type, response)
+            except Exception as error:
+                print(f"[v0] Focused chart snapshot could not be saved: {type(error).__name__}")
+                response["historyStorageAvailable"] = False
     except Exception as error:
         response = pending_focused_scan(cadence, entity_type)
         response.update({
@@ -615,14 +728,27 @@ async def focused_live(
         cache_ttl = 15 if cached and cached[1].get("scanError") else FOCUSED_CHART_CACHE_TTL
         if not refresh and cached and time.monotonic() - cached[0] < cache_ttl:
             return cached[1]
-        if scope == "all":
-            if refresh:
-                focused_chart_cache.pop(cache_key, None)
+        if scope == "all" and refresh:
+            focused_chart_cache.pop(cache_key, None)
+
+    if scope == "all" and not refresh:
+        try:
+            persisted = await load_focused_snapshot(cadence, entity_type)
+        except Exception as error:
+            print(f"[v0] Focused chart snapshot could not be loaded: {type(error).__name__}")
+            persisted = None
+        if persisted is not None:
+            async with focused_chart_cache_lock:
+                focused_chart_cache[cache_key] = (time.monotonic(), persisted)
+            return persisted
+
+    if scope == "all":
+        async with focused_chart_cache_lock:
             task = focused_chart_scan_tasks.get(cache_key)
             if task is None or task.done():
                 task = asyncio.create_task(run_focused_scan_and_cache(cache_key, cadence, entity_type, scope))
                 focused_chart_scan_tasks[cache_key] = task
-            return pending_focused_scan(cadence, entity_type)
+        return pending_focused_scan(cadence, entity_type)
 
     response = await scan_focused_live(cadence, entity_type, scope)
     async with focused_chart_cache_lock:
