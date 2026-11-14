@@ -74,7 +74,6 @@ HISTORY_CHART_TYPES = {
     "weekly_top_songs": "track",
     "daily_top_artists": "artist",
     "weekly_top_artists": "artist",
-    "daily_top_albums": "album",
     "weekly_top_albums": "album",
 }
 FOCUSED_ARTISTS = (
@@ -168,7 +167,6 @@ CHART_METHODS = {
     "daily_top_songs": "daily_top_songs",
     "daily_top_artists": "daily_top_artists",
     "daily_viral_songs": "daily_viral_songs",
-    "daily_top_albums": "daily_top_albums",
     "weekly_top_songs": "weekly_top_songs",
     "weekly_top_artists": "weekly_top_artists",
     "weekly_top_albums": "weekly_top_albums",

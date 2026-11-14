@@ -18,7 +18,6 @@ CHART_STEPS = {
     "weekly_top_songs": 7,
     "daily_top_artists": 1,
     "weekly_top_artists": 7,
-    "daily_top_albums": 1,
     "weekly_top_albums": 7,
 }
 BACKFILL_BATCH_SIZE = 6
