@@ -104,7 +104,15 @@ def entry_entity_uri(entry: dict[str, Any]) -> str | None:
     return None
 
 
-def snapshot_values(entry: dict[str, Any]) -> tuple[str, str, str, int | None, int | None] | None:
+def optional_chart_int(stats: dict[str, Any], key: str, minimum: int = 0) -> int | None:
+    try:
+        value = int(stats.get(key))
+    except (TypeError, ValueError):
+        return None
+    return value if value >= minimum else None
+
+
+def snapshot_values(entry: dict[str, Any]) -> tuple[str, str, str, int | None, int | None, int | None, int | None, int | None, int | None, date | None] | None:
     uri = entry_entity_uri(entry)
     if uri is None:
         return None
@@ -122,12 +130,12 @@ def snapshot_values(entry: dict[str, Any]) -> tuple[str, str, str, int | None, i
         if streams is not None and streams < 0:
             streams = None
 
-    try:
-        rank = int(stats.get("currentRank"))
-    except (TypeError, ValueError):
-        rank = None
-    if rank is not None and rank <= 0:
-        rank = None
+    rank = optional_chart_int(stats, "currentRank", minimum=1)
+    previous_rank = optional_chart_int(stats, "previousRank", minimum=1)
+    peak_rank = optional_chart_int(stats, "peakRank", minimum=1)
+    consecutive_appearances = optional_chart_int(stats, "consecutiveAppearancesOnChart")
+    appearances = optional_chart_int(stats, "appearancesOnChart")
+    entry_date = parse_chart_date(stats.get("entryDate"))
     if streams is None and rank is None:
         return None
 
@@ -143,7 +151,18 @@ def snapshot_values(entry: dict[str, Any]) -> tuple[str, str, str, int | None, i
     entity_name = metadata.get({"track": "trackName", "artist": "artistName", "album": "albumName"}[entity_type])
     if not isinstance(entity_name, str) or not entity_name.strip():
         entity_name = "Untitled"
-    return entity_type, entity_name.strip(), ", ".join(artist_names), streams, rank
+    return (
+        entity_type,
+        entity_name.strip(),
+        ", ".join(artist_names),
+        streams,
+        rank,
+        previous_rank,
+        peak_rank,
+        consecutive_appearances,
+        appearances,
+        entry_date,
+    )
 
 
 def first_entry_date(entries: list[dict[str, Any]]) -> date | None:
@@ -175,9 +194,33 @@ async def save_chart_snapshot(
         uri = entry_entity_uri(entry)
         values = snapshot_values(entry)
         if uri and values and (allowed_entity_uris is None or uri in allowed_entity_uris):
-            entity_type, entity_name, artist_names, streams, rank = values
+            (
+                entity_type,
+                entity_name,
+                artist_names,
+                streams,
+                rank,
+                previous_rank,
+                peak_rank,
+                consecutive_appearances,
+                appearances,
+                entry_date,
+            ) = values
             deduplicated[uri] = (
-                chart_type, country, chart_date, uri, entity_name, artist_names, streams, entity_type, rank
+                chart_type,
+                country,
+                chart_date,
+                uri,
+                entity_name,
+                artist_names,
+                streams,
+                entity_type,
+                rank,
+                previous_rank,
+                peak_rank,
+                consecutive_appearances,
+                appearances,
+                entry_date,
             )
 
     if not deduplicated:
@@ -188,8 +231,9 @@ async def save_chart_snapshot(
             """
             INSERT INTO public.spotify_chart_snapshots
                 (chart_type, country_code, chart_date, track_uri, track_name, artist_names,
-                 stream_count, entity_type, chart_rank)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 stream_count, entity_type, chart_rank, previous_rank, peak_rank,
+                 consecutive_appearances, appearances, entry_date)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT (chart_type, country_code, chart_date, track_uri)
             DO UPDATE SET
                 track_name = EXCLUDED.track_name,
@@ -197,6 +241,11 @@ async def save_chart_snapshot(
                 stream_count = EXCLUDED.stream_count,
                 entity_type = EXCLUDED.entity_type,
                 chart_rank = EXCLUDED.chart_rank,
+                previous_rank = EXCLUDED.previous_rank,
+                peak_rank = EXCLUDED.peak_rank,
+                consecutive_appearances = EXCLUDED.consecutive_appearances,
+                appearances = EXCLUDED.appearances,
+                entry_date = EXCLUDED.entry_date,
                 fetched_at = now()
             """,
             list(deduplicated.values()),

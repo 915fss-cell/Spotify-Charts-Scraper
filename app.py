@@ -670,6 +670,10 @@ async def focused_live(
             focused_chart_cache.pop(cache_key, None)
 
     if scope == "all" and not refresh:
+        async with focused_chart_cache_lock:
+            active_scan = focused_chart_scan_tasks.get(cache_key)
+            if active_scan is not None and not active_scan.done():
+                return pending_focused_scan(cadence, entity_type)
         try:
             persisted = await load_focused_snapshot(cadence, entity_type)
         except Exception as error:
@@ -816,6 +820,11 @@ def history_point(row) -> dict[str, Any]:
         "regionName": COUNTRY_NAMES.get(country_code, country_code),
         "chartDate": row["chart_date"].isoformat(),
         "chartRank": row["chart_rank"],
+        "previousRank": row["previous_rank"],
+        "peakRank": row["peak_rank"],
+        "consecutiveAppearancesOnChart": row["consecutive_appearances"],
+        "appearancesOnChart": row["appearances"],
+        "entryDate": row["entry_date"].isoformat() if row["entry_date"] else None,
         "streamCount": row["stream_count"],
     }
 
@@ -865,7 +874,9 @@ async def focused_history(
         rows = await pool.fetch(
             f"""
             SELECT DISTINCT ON (country_code, track_uri)
-                track_uri, entity_type, track_name, artist_names, country_code, chart_date, chart_rank, stream_count
+                track_uri, entity_type, track_name, artist_names, country_code, chart_date,
+                chart_rank, previous_rank, peak_rank, consecutive_appearances, appearances,
+                entry_date, stream_count
             FROM public.spotify_chart_snapshots
             WHERE chart_type = $1 AND entity_type = $2 AND country_code = ANY($3::text[])
               AND ($4::date IS NULL OR chart_date >= $4::date)
