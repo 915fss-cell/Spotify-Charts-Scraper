@@ -523,6 +523,7 @@ async def run_history_backfill_batch(
     start_date: date,
     total_entity_uris: list[str] | None,
     scraper_factory: Callable[[], Awaitable[SpotifyCharts]],
+    target_entity_uris: list[str] | None = None,
 ) -> dict[str, Any]:
     if chart_type not in CHART_STEPS:
         raise HTTPException(status_code=400, detail="Choose a supported songs or artists chart to backfill history.")
@@ -536,7 +537,13 @@ async def run_history_backfill_batch(
         if start_date > target_date:
             start_date = target_date
 
-    await ensure_backfill_job(pool, chart_type, country, start_date, target_date, "all-chart-entries")
+    allowed_entity_uris = set(target_entity_uris) if target_entity_uris else None
+    selection_fingerprint = (
+        "all-chart-entries"
+        if allowed_entity_uris is None
+        else hashlib.sha256("\n".join(sorted(allowed_entity_uris)).encode("utf-8")).hexdigest()
+    )
+    await ensure_backfill_job(pool, chart_type, country, start_date, target_date, selection_fingerprint)
     job = await pool.fetchrow(
         """
         SELECT start_date, target_date, next_date, processed_dates, total_dates, status
@@ -602,7 +609,15 @@ async def run_history_backfill_batch(
         if not isinstance(historical_entries, list):
             await _pause_job(pool, chart_type, country, "Spotify returned an unsupported historical chart response.")
             break
-        if await save_chart_snapshot(pool, chart_type, country, chart_day, historical_entries) == 0:
+        saved_count = await save_chart_snapshot(
+            pool,
+            chart_type,
+            country,
+            chart_day,
+            historical_entries,
+            allowed_entity_uris=allowed_entity_uris,
+        )
+        if saved_count == 0 and allowed_entity_uris is None:
             await _pause_job(pool, chart_type, country, "Spotify did not include a rank or stream count in a historical chart response.")
             break
 
