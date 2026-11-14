@@ -12,6 +12,7 @@
   let historyChart = null;
   let historyTrendData = null;
   let liveRequest = 0;
+  let isAutoRegionScanning = false;
   let historyRequest = 0;
   const authChannel = "BroadcastChannel" in window ? new BroadcastChannel("spotify-charts-auth") : null;
   const focusedArtists = [
@@ -268,6 +269,37 @@
     return payload;
   }
 
+  async function loadAllRegionsAutomatically(requestId) {
+    isAutoRegionScanning = true;
+    const cadence = state.cadence;
+    const entityType = state.entityType;
+    const params = new URLSearchParams({ cadence, entity_type: entityType, scope: "all" });
+    const button = byId("live-refresh");
+    button.disabled = true;
+    button.textContent = "Scanning regions…";
+    setStatus("live-status", `Global chart loaded. Scanning all regions for ${focusedSelectionName()} ${entityTypeName()} charts…`);
+
+    try {
+      const payload = await requestJson(`/api/focused/live?${params}`);
+      if (requestId !== liveRequest || activePage !== "live" || state.cadence !== cadence || state.entityType !== entityType) return;
+      state.marketScope = "all";
+      liveOverview = payload;
+      liveKey = currentKey();
+      liveLoadedAt = Date.now();
+      renderLive(payload);
+    } catch (error) {
+      if (requestId === liveRequest && activePage === "live") {
+        setStatus("live-status", `The Global chart is loaded, but the automatic regional scan failed: ${error.message}`, true);
+      }
+    } finally {
+      if (requestId === liveRequest) {
+        isAutoRegionScanning = false;
+        button.disabled = false;
+        updateLiveActionLabel();
+      }
+    }
+  }
+
   async function loadFocusedLive(refresh = false) {
     const requestId = ++liveRequest;
     byId("live-refresh").disabled = true;
@@ -278,7 +310,10 @@
       : `Loading ${focusedSelectionName()} ${entityTypeName()} charts across all regions…`);
     try {
       const payload = await fetchLiveOverview(refresh);
-      if (requestId === liveRequest && activePage === "live") renderLive(payload);
+      if (requestId === liveRequest && activePage === "live") {
+        renderLive(payload);
+        if (payload.marketScope === "global") void loadAllRegionsAutomatically(requestId);
+      }
     } catch (error) {
       if (requestId === liveRequest) {
         if (state.marketScope === "all" && liveOverview?.marketScope === "global") {
@@ -292,7 +327,7 @@
         }
       }
     } finally {
-      if (requestId === liveRequest) {
+      if (requestId === liveRequest && !isAutoRegionScanning) {
         byId("live-refresh").disabled = false;
         updateLiveActionLabel();
       }
