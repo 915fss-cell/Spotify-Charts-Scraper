@@ -14,19 +14,18 @@
   let liveRequest = 0;
   let isAutoRegionScanning = false;
   let historyRequest = 0;
+  let historyOffset = 0;
+  const HISTORY_PAGE_SIZE = 50;
   const authChannel = "BroadcastChannel" in window ? new BroadcastChannel("spotify-charts-auth") : null;
-  const focusedArtists = [
-    { uri: "spotify:artist:06HL4z0CvFAxyc27GXpf02", name: "Taylor Swift" },
-    { uri: "spotify:artist:4UIOuc84ExWojcUzFGtbW8", name: "Felix" },
-  ];
-  const focusedArtistUris = focusedArtists.map((artist) => artist.uri);
-  const focusedArtistNames = focusedArtists.map((artist) => artist.name.toLowerCase());
-  const focusedTrackUri = "spotify:track:15fpZUMOQD9ONTjxITFXFT";
+  let trackedEntities = [];
+
+  async function loadTrackedEntities() {
+    trackedEntities = await requestJson("/api/selections");
+    return trackedEntities;
+  }
 
   function focusedSelectionName(entityType = state.entityType) {
-    if (entityType === "artist") return "Taylor Swift and Felix";
-    if (entityType === "track") return "Taylor Swift, Felix, and Unfair";
-    return "Taylor Swift and Felix";
+    return `Tracked ${entityType === "track" ? "songs" : entityType === "artist" ? "artists" : "albums"}`;
   }
 
   function setStatus(id, message, isError = false) {
@@ -178,19 +177,14 @@
   function buildGlobalOverview(chart) {
     const chartDate = String(chart.displayChart?.date || "Latest");
     const metadataKey = { track: "trackMetadata", artist: "artistMetadata", album: "albumMetadata" }[state.entityType];
+    const selectedUris = new Set(trackedEntities
+      .filter((entity) => entity.entityType === state.entityType)
+      .map((entity) => entity.entityUri));
     const entries = (chart.entries || []).filter((entry) => {
       const metadata = entry[metadataKey] || {};
-      if (state.entityType === "artist") {
-        const uri = metadata.artistUri || entry.artistUri;
-        const name = String(metadata.artistName || "").toLowerCase();
-        return focusedArtistUris.includes(uri) || focusedArtistNames.includes(name);
-      }
-      const entityUri = metadata.trackUri || metadata.albumUri || entry.trackUri || entry.albumUri;
-      if (state.entityType === "track" && entityUri === focusedTrackUri) return true;
-      return (metadata.artists || []).some((artist) => artist && (
-        focusedArtistUris.includes(artist.spotifyUri || artist.uri)
-        || focusedArtistNames.includes(String(artist.name || "").toLowerCase())
-      ));
+      const entityUri = metadata.trackUri || metadata.artistUri || metadata.albumUri
+        || entry.trackUri || entry.artistUri || entry.albumUri;
+      return selectedUris.has(entityUri);
     }).map((entry) => {
       const metadata = entry[metadataKey] || {};
       const stats = entry.chartEntryData || {};
@@ -270,6 +264,7 @@
 
   async function fetchLiveOverview(refresh = false) {
     let payload;
+    if (!trackedEntities.length) await loadTrackedEntities();
     if (state.marketScope === "global") {
       const chartType = `${state.cadence}_top_${{ track: "songs", artist: "artists", album: "albums" }[state.entityType]}`;
       const cachedChart = getCachedChart(chartType, "GLOBAL", "latest");
@@ -356,12 +351,19 @@
     byId("history-chart-card").hidden = true;
     const covers = new Map((liveOverview?.releases || []).map((release) => [release.entityUri, release.imageUrl]));
     payload.releases.forEach((release) => { release.imageUrl = covers.get(release.entityUri) || null; });
-    byId("history-results-title").textContent = state.view === "release" ? `${focusedSelectionName()} history by release` : `${focusedSelectionName()} history by region`;
-    byId("history-results-count").textContent = `${payload.releases.length} releases · ${payload.regions.length} regions · ${payload.snapshotRows.toLocaleString()} snapshots`;
+    byId("history-results-title").textContent = state.view === "release" ? `${focusedSelectionName()} history` : `${focusedSelectionName()} by market`;
+    byId("history-results-count").textContent = `${payload.releases.length} entities · ${payload.regions.length} markets · ${Number(payload.totalRows || 0).toLocaleString()} saved appearances`;
+    const pagination = byId("history-pagination");
+    pagination.hidden = payload.totalRows <= HISTORY_PAGE_SIZE;
+    byId("history-page-label").textContent = payload.totalRows
+      ? `${historyOffset + 1}–${historyOffset + payload.snapshotRows} of ${Number(payload.totalRows).toLocaleString()}`
+      : "No saved appearances";
+    byId("history-page-previous").disabled = historyOffset === 0;
+    byId("history-page-next").disabled = !payload.hasMore;
     renderResultCards("history-results", payload.releases, payload.regions, true);
     const empty = payload.snapshotRows === 0;
-    const nextStep = empty ? "No saved snapshots are available in this range yet. Current regional charts will be captured as they load." : "Choose View trend on a release to compare its rank or streams across regions.";
-    setStatus("selected-history-status", `${payload.snapshotRows.toLocaleString()} ${focusedSelectionName()} ${entityTypeName()} snapshots across ${payload.regions.length} regions. ${nextStep}`);
+    const nextStep = empty ? "No saved appearances are available for this chart and range yet. Configure tracking above to continue." : "Choose View trend on an entity to compare its rank or streams over time.";
+    setStatus("selected-history-status", `${payload.snapshotRows.toLocaleString()} saved appearances across ${payload.regions.length} markets. ${nextStep}`);
     byId("history-chart").hidden = true;
     byId("history-empty").hidden = false;
     byId("history-empty").textContent = "Choose a release below to compare its chart history across regions.";
@@ -373,7 +375,56 @@
     }
   }
 
+  async function loadHistoryManagement() {
+    try {
+      const [overview, configs, selections, countries, runs, schedule] = await Promise.all([
+        requestJson("/api/history/overview"),
+        requestJson("/api/tracking/configs"),
+        requestJson("/api/selections"),
+        requestJson("/api/countries"),
+        requestJson("/api/collection/runs?limit=8"),
+        requestJson("/api/collection/schedule"),
+      ]);
+      byId("history-overview-grid").innerHTML = [
+        [overview.tracked_entities, "Tracked entities"],
+        [overview.active_configs, "Active chart configs"],
+        [overview.snapshot_rows, "Saved appearances"],
+        [overview.retry_jobs, "Dates needing retry"],
+      ].map(([value, label]) => `<div class="history-stat"><strong>${Number(value || 0).toLocaleString()}</strong><span>${escapeHtml(label)}</span></div>`).join("");
+      const entitySelect = byId("tracking-entity");
+      entitySelect.innerHTML = selections.length
+        ? selections.map((entity) => `<option value="${escapeHtml(entity.entityUri)}" data-type="${escapeHtml(entity.entityType)}">${escapeHtml(entity.entityName)} · ${escapeHtml(entity.entityType)}</option>`).join("")
+        : '<option value="">Save an entity first</option>';
+      byId("tracking-country").innerHTML = countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+      const setChartOptions = () => {
+        const selected = entitySelect.selectedOptions[0];
+        const type = selected?.dataset.type;
+        const options = type === "artist"
+          ? [["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"]]
+          : type === "album" ? [["weekly_top_albums", "Weekly top albums"]]
+            : [["daily_top_songs", "Daily top songs"], ["weekly_top_songs", "Weekly top songs"]];
+        byId("tracking-chart").innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+      };
+      entitySelect.onchange = setChartOptions;
+      setChartOptions();
+      byId("tracking-config-list").innerHTML = configs.length ? configs.map((config) => `
+        <div class="history-config-row">
+          <div class="history-config-copy"><strong>${escapeHtml(config.entity_name)} · ${escapeHtml(config.chart_type.replaceAll("_", " "))}</strong><span>${escapeHtml(config.country_code)} · ${config.backfill_start_date ? `from ${escapeHtml(config.backfill_start_date)}` : "start date not set"} · ${config.enabled ? "Active" : "Paused"}</span></div>
+          <button class="quiet-button" type="button" data-toggle-config="${escapeHtml(config.entity_uri)}" data-config-chart="${escapeHtml(config.chart_type)}" data-config-country="${escapeHtml(config.country_code)}" data-config-enabled="${String(config.enabled)}">${config.enabled ? "Pause" : "Resume"}</button>
+        </div>`).join("") : '<p class="history-empty-row">No chart tracking configured yet.</p>';
+      byId("collection-runs-list").innerHTML = runs.items.length ? runs.items.map((run) => `<div class="history-run-row"><span>Run #${run.id} · ${escapeHtml(run.source)} · ${escapeHtml(run.status)}</span><span>${Number(run.completed_chart_keys || 0)} / ${Number(run.requested_chart_keys || 0)} chart dates · ${run.created_at ? escapeHtml(new Date(run.created_at).toLocaleString()) : ""}</span></div>`).join("") : '<p class="history-empty-row">No collection runs recorded.</p>';
+      const nextRun = schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString() : "Schedule disabled";
+      byId("collection-next-run").textContent = nextRun;
+      byId("collection-time").value = String(schedule.local_time || "09:00").slice(0, 5);
+      byId("collection-timezone").value = schedule.timezone || "Africa/Algiers";
+      byId("collection-enabled").checked = Boolean(schedule.enabled);
+    } catch (error) {
+      byId("history-overview-grid").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
+    }
+  }
+
   async function loadFocusedHistory(refreshLive = false) {
+    void loadHistoryManagement();
     const requestId = ++historyRequest;
     setStatus("selected-history-status", `Loading ${focusedSelectionName()} snapshots across regions…`);
     try {
@@ -390,6 +441,8 @@
         cadence: state.cadence,
         entity_type: state.entityType,
         range: byId("history-range").value,
+        limit: String(HISTORY_PAGE_SIZE),
+        offset: String(historyOffset),
       });
       const payload = await requestJson(`/api/focused/history?${params}`);
       if (requestId === historyRequest && activePage === "history") renderHistory(payload);
@@ -508,13 +561,13 @@
       state.marketScope = "global";
       byId("live-title-label").textContent = route.title;
       byId("live-eyebrow").textContent = `${route.title} chart`;
-      byId("live-description").textContent = `Follow Taylor Swift and Felix, plus the song Unfair, on the Global ${route.title.toLowerCase()} chart.`;
+      byId("live-description").textContent = `Explore your tracked entities on the Global ${route.title.toLowerCase()} chart.`;
       byId("live-view-control").hidden = route.entityType === "artist";
       byId("history-title-label").textContent = isChartHistory ? `${route.title} history` : "History";
-      byId("history-eyebrow").textContent = isChartHistory ? `${route.title} history` : "Artist chart history";
+      byId("history-eyebrow").textContent = isChartHistory ? `${route.title} history` : "Tracked chart history";
       byId("history-description").textContent = isChartHistory
-        ? `Saved ${route.title.toLowerCase()} snapshots for Taylor Swift, Felix, and Unfair across every region.`
-        : "Saved chart history for Taylor Swift, Felix, and Unfair across every region.";
+        ? `Saved ${route.title.toLowerCase()} snapshots for your configured entities and markets.`
+        : "Review saved appearances, tracked entities, and collection activity.";
       updateFocusControls();
       updateLiveActionLabel();
     } else if (page === "history") {
@@ -523,8 +576,8 @@
       state.view = "release";
       state.marketScope = "global";
       byId("history-title-label").textContent = "History";
-      byId("history-eyebrow").textContent = "Artist chart history";
-      byId("history-description").textContent = "Saved chart history for Taylor Swift, Felix, and Unfair across every region.";
+      byId("history-eyebrow").textContent = "Tracked chart history";
+      byId("history-description").textContent = "Review saved appearances, tracked entities, and collection activity.";
       updateFocusControls();
     }
     document.querySelectorAll("[data-chart-tabs]").forEach((tabs) => {
@@ -570,6 +623,7 @@
         updateLiveActionLabel();
         loadFocusedLive();
       } else if (activePage === "history") {
+        historyOffset = 0;
         loadFocusedHistory();
       }
     });
@@ -580,7 +634,95 @@
     loadFocusedLive(true);
   });
   byId("history-refresh").addEventListener("click", () => loadFocusedHistory(true));
-  byId("history-range").addEventListener("change", () => loadFocusedHistory());
+  byId("collection-run-now").addEventListener("click", async () => {
+    const button = byId("collection-run-now");
+    button.disabled = true;
+    button.textContent = "Collecting…";
+    try {
+      const result = await requestJson("/api/collection/run", { method: "POST" });
+      setStatus("selected-history-status", `Collection ${result.status}: ${Number(result.completedChartKeys || 0)} of ${Number(result.requestedChartKeys || 0)} chart keys processed.`);
+      await loadHistoryManagement();
+      await loadFocusedHistory(true);
+    } catch (error) {
+      setStatus("selected-history-status", error.message, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Run collection now";
+    }
+  });
+  byId("history-range").addEventListener("change", () => {
+    historyOffset = 0;
+    loadFocusedHistory();
+  });
+  byId("history-page-previous").addEventListener("click", () => {
+    historyOffset = Math.max(0, historyOffset - HISTORY_PAGE_SIZE);
+    loadFocusedHistory();
+  });
+  byId("history-page-next").addEventListener("click", () => {
+    historyOffset += HISTORY_PAGE_SIZE;
+    loadFocusedHistory();
+  });
+  byId("tracking-config-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const entity = byId("tracking-entity").selectedOptions[0];
+    if (!entity?.value) return;
+    try {
+      await requestJson("/api/tracking/configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entity_uri: entity.value,
+          chart_type: byId("tracking-chart").value,
+          country_code: byId("tracking-country").value,
+          enabled: true,
+          backfill_start_date: byId("tracking-start-date").value || null,
+        }),
+      });
+      setStatus("selected-history-status", "Tracking configuration saved.");
+      await loadHistoryManagement();
+      await loadFocusedHistory();
+    } catch (error) {
+      setStatus("selected-history-status", error.message, true);
+    }
+  });
+  byId("tracking-config-list").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-toggle-config]");
+    if (!button) return;
+    try {
+      await requestJson("/api/tracking/configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entity_uri: button.dataset.toggleConfig,
+          chart_type: button.dataset.configChart,
+          country_code: button.dataset.configCountry,
+          enabled: button.dataset.configEnabled !== "true",
+        }),
+      });
+      await loadHistoryManagement();
+      await loadFocusedHistory();
+    } catch (error) {
+      setStatus("selected-history-status", error.message, true);
+    }
+  });
+  byId("collection-schedule-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const schedule = await requestJson("/api/collection/schedule", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: byId("collection-enabled").checked,
+          local_time: byId("collection-time").value,
+          timezone: byId("collection-timezone").value.trim(),
+        }),
+      });
+      byId("collection-next-run").textContent = schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString() : "Schedule disabled";
+      setStatus("selected-history-status", "Collection schedule saved. Automatic triggering must be enabled in the deployment runtime.");
+    } catch (error) {
+      setStatus("selected-history-status", error.message, true);
+    }
+  });
   byId("history-metric").addEventListener("change", () => {
     if (historyTrendData) renderHistoryTrend(historyTrendData);
   });

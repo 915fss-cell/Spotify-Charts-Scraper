@@ -1,0 +1,263 @@
+from __future__ import annotations
+
+import json
+import secrets
+from datetime import datetime, time as clock_time, timedelta, timezone
+from typing import Any, Awaitable, Callable
+from zoneinfo import ZoneInfo
+
+import asyncpg
+import httpx
+from fastapi import HTTPException
+
+from chart_history import CHART_STEPS, parse_chart_date, save_chart_snapshot
+from spotify_charts import SpotifyCharts
+
+MAX_CHART_KEYS_PER_TICK = 8
+COLLECTION_LEASE = timedelta(minutes=15)
+
+
+def next_schedule_time(now: datetime, local_time: clock_time, timezone_name: str) -> datetime:
+    zone = ZoneInfo(timezone_name)
+    local_now = now.astimezone(zone)
+    candidate = local_now.replace(
+        hour=local_time.hour,
+        minute=local_time.minute,
+        second=0,
+        microsecond=0,
+    )
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(timezone.utc)
+
+
+async def _start_run(
+    pool: asyncpg.Pool,
+    source: str,
+) -> tuple[int, str] | None:
+    owner = secrets.token_urlsafe(18)
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            if source == "scheduled":
+                schedule = await connection.fetchrow(
+                    """SELECT enabled, local_time, timezone, next_run_at, lease_expires_at
+                       FROM public.spotify_collection_schedule WHERE singleton = true FOR UPDATE"""
+                )
+                if (
+                    schedule is None
+                    or not schedule["enabled"]
+                    or schedule["next_run_at"] is None
+                    or schedule["next_run_at"] > datetime.now(timezone.utc)
+                    or (schedule["lease_expires_at"] is not None and schedule["lease_expires_at"] > datetime.now(timezone.utc))
+                ):
+                    return None
+                await connection.execute(
+                    """UPDATE public.spotify_collection_schedule
+                       SET lease_owner = $1, lease_expires_at = now() + $2::interval, updated_at = now()
+                       WHERE singleton = true""",
+                    owner,
+                    COLLECTION_LEASE,
+                )
+            run_id = await connection.fetchval(
+                """INSERT INTO public.spotify_collection_runs (source, status, started_at)
+                   VALUES ($1, 'running', now()) RETURNING id""",
+                source,
+            )
+            return int(run_id), owner
+
+
+async def _retry_claimed_job(
+    pool: asyncpg.Pool,
+    chart_type: str,
+    country: str,
+    requested_date: str | None,
+    owner: str,
+    message: str,
+    http_status: int | None,
+) -> None:
+    if requested_date is None:
+        return
+    await pool.execute(
+        """UPDATE public.spotify_chart_refresh_jobs SET status = 'retry',
+             next_attempt_at = now() + LEAST(3600, 30 * power(2, LEAST(attempt_count - 1, 7))) * interval '1 second',
+             last_error = $5, last_http_status = $6, lease_owner = NULL,
+             lease_expires_at = NULL, completed_at = NULL, updated_at = now()
+           WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3
+             AND lease_owner = $4 AND status = 'running'""",
+        chart_type, country, requested_date, owner, message, http_status,
+    )
+
+
+async def run_collection_tick(
+    pool: asyncpg.Pool,
+    scraper_factory: Callable[[], Awaitable[SpotifyCharts]],
+    source: str = "manual",
+    max_chart_keys: int = MAX_CHART_KEYS_PER_TICK,
+) -> dict[str, Any] | None:
+    if source not in {"scheduled", "manual"}:
+        raise ValueError("Collection source must be scheduled or manual.")
+    started = await _start_run(pool, source)
+    if started is None:
+        return None
+    run_id, owner = started
+    config_rows = await pool.fetch(
+        """SELECT chart_type, country_code, array_agg(entity_uri ORDER BY entity_uri) AS entity_uris
+           FROM public.spotify_chart_tracking_configs
+           WHERE enabled = true AND chart_type = ANY($1::text[])
+           GROUP BY chart_type, country_code
+           ORDER BY chart_type, country_code
+           LIMIT $2""",
+        list(CHART_STEPS),
+        max_chart_keys,
+    )
+    requested = len(config_rows)
+    completed = 0
+    unavailable = 0
+    failed = 0
+    error_messages: list[str] = []
+
+    try:
+        scraper = await scraper_factory()
+    except Exception as error:
+        await pool.execute(
+            """UPDATE public.spotify_collection_runs SET status = 'failed', completed_at = now(),
+                 summary_error = $2 WHERE id = $1""",
+            run_id,
+            f"Spotify authorization unavailable ({type(error).__name__}).",
+        )
+        if source == "scheduled":
+            await _release_schedule(pool, owner)
+        raise HTTPException(status_code=502, detail="Spotify authorization is unavailable for collection.") from error
+
+    for config in config_rows:
+        chart_type = config["chart_type"]
+        country = config["country_code"]
+        requested_date: str | None = None
+        http_status: int | None = None
+        try:
+            payload = await getattr(scraper, chart_type)(country, "latest")
+            entries = payload.get("entries") if isinstance(payload, dict) else None
+            display_chart = payload.get("displayChart") if isinstance(payload, dict) else None
+            raw_date = display_chart.get("date") if isinstance(display_chart, dict) else None
+            response_date = parse_chart_date(raw_date or (payload.get("date") if isinstance(payload, dict) else None))
+            if not isinstance(entries, list) or response_date is None:
+                raise ValueError("Spotify returned a chart without a valid date and entries.")
+
+            requested_date = response_date.isoformat()
+            async with pool.acquire() as connection:
+                async with connection.transaction():
+                    await connection.execute(
+                        """INSERT INTO public.spotify_chart_refresh_jobs
+                             (chart_type, country_code, requested_date, chart_date, status)
+                           VALUES ($1, $2, $3, $4, 'pending') ON CONFLICT DO NOTHING""",
+                        chart_type, country, requested_date, response_date,
+                    )
+                    job = await connection.fetchrow(
+                        """UPDATE public.spotify_chart_refresh_jobs
+                           SET status = 'running', lease_owner = $4,
+                               lease_expires_at = now() + $5::interval,
+                               attempt_count = attempt_count + 1, updated_at = now()
+                           WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3
+                             AND status NOT IN ('succeeded', 'unavailable', 'complete')
+                             AND next_attempt_at <= now()
+                             AND (status <> 'running' OR lease_expires_at IS NULL OR lease_expires_at < now())
+                           RETURNING attempt_count""",
+                        chart_type, country, requested_date, owner, COLLECTION_LEASE,
+                    )
+                    if job is None:
+                        existing_status = await connection.fetchval(
+                            """SELECT status FROM public.spotify_chart_refresh_jobs
+                               WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3""",
+                            chart_type, country, requested_date,
+                        )
+                        if existing_status in {"succeeded", "unavailable", "complete"}:
+                            completed += 1
+                            continue
+                        raise RuntimeError("Chart date is already leased or waiting for retry.")
+
+                    await connection.execute(
+                        """INSERT INTO public.spotify_chart_payload_cache
+                             (chart_type, country_code, requested_date, payload, chart_date, fetched_at)
+                           VALUES ($1, $2, $3, $4::jsonb, $5, now())
+                           ON CONFLICT (chart_type, country_code, requested_date) DO NOTHING""",
+                        chart_type,
+                        country,
+                        requested_date,
+                        json.dumps(payload, separators=(",", ":")),
+                        response_date,
+                    )
+                    entity_uris = set(config["entity_uris"])
+                    await save_chart_snapshot(
+                        pool,
+                        chart_type,
+                        country,
+                        response_date,
+                        entries,
+                        allowed_entity_uris=entity_uris,
+                        connection=connection,
+                    )
+                    await connection.execute(
+                        """UPDATE public.spotify_chart_refresh_jobs SET status = 'succeeded',
+                             response_chart_date = $5, completed_at = now(), fetched_at = now(),
+                             last_http_status = 200, last_error = NULL,
+                             lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+                           WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3 AND lease_owner = $4""",
+                        chart_type, country, requested_date, owner, response_date,
+                    )
+            completed += 1
+        except httpx.HTTPStatusError as error:
+            http_status = error.response.status_code
+            failed += 1
+            message = f"Spotify returned HTTP {http_status}; no date was classified unavailable."
+            await _retry_claimed_job(pool, chart_type, country, requested_date, owner, message, http_status)
+            error_messages.append(f"{chart_type}/{country}: HTTP {http_status}; date not classified unavailable")
+        except Exception as error:
+            failed += 1
+            message = f"Collection processing failed ({type(error).__name__})."
+            await _retry_claimed_job(pool, chart_type, country, requested_date, owner, message, http_status)
+            error_messages.append(f"{chart_type}/{country}: {type(error).__name__}")
+
+    status = "succeeded" if failed == 0 and unavailable == 0 else "partial" if completed or unavailable else "failed"
+    summary = "; ".join(error_messages[:8]) or None
+    await pool.execute(
+        """UPDATE public.spotify_collection_runs SET status = $2, completed_at = now(),
+             requested_chart_keys = $3, completed_chart_keys = $4, unavailable_chart_keys = $5,
+             failed_chart_keys = $6, summary_error = $7 WHERE id = $1""",
+        run_id, status, requested, completed, unavailable, failed, summary,
+    )
+    if source == "scheduled":
+        await _release_schedule(pool, owner)
+    return {
+        "id": run_id,
+        "source": source,
+        "status": status,
+        "requestedChartKeys": requested,
+        "completedChartKeys": completed,
+        "unavailableChartKeys": unavailable,
+        "failedChartKeys": failed,
+        "summaryError": summary,
+    }
+
+
+async def _release_schedule(pool: asyncpg.Pool, owner: str) -> None:
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            schedule = await connection.fetchrow(
+                """SELECT local_time, timezone, enabled FROM public.spotify_collection_schedule
+                   WHERE singleton = true AND lease_owner = $1 FOR UPDATE""",
+                owner,
+            )
+            if schedule is None:
+                return
+            next_run = (
+                next_schedule_time(datetime.now(timezone.utc), schedule["local_time"], schedule["timezone"])
+                if schedule["enabled"]
+                else None
+            )
+            await connection.execute(
+                """UPDATE public.spotify_collection_schedule SET next_run_at = $1,
+                     lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+                   WHERE singleton = true AND lease_owner = $2""",
+                next_run,
+                owner,
+            )

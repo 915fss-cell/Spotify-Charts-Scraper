@@ -3,3 +3,4 @@ creds.conf
 .refresh_token
 __pycache__
 .venv/
+.vercel

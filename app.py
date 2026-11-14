@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import date as calendar_date, timedelta
+from datetime import date as calendar_date, datetime, time as clock_time, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode, urlsplit
@@ -21,9 +23,10 @@ from chart_history import (
     entry_entity_uri,
     get_history_pool,
     prepare_chart_history,
-    run_history_backfill_batch,
+    run_durable_history_backfill_batch,
     snapshot_values,
 )
+from collection_worker import run_collection_tick
 from Countries import Countries
 from Settings import SpotifySettings
 from spotify_charts import SpotifyCharts
@@ -164,6 +167,23 @@ class SelectionInput(BaseModel):
     image_url: str | None = Field(default=None, max_length=2048)
 
 
+class TrackingConfigInput(BaseModel):
+    entity_uri: str = Field(min_length=16, max_length=128)
+    chart_type: Literal[
+        "daily_top_songs", "weekly_top_songs", "daily_top_artists",
+        "weekly_top_artists", "weekly_top_albums",
+    ]
+    country_code: str = Field(min_length=2, max_length=6)
+    enabled: bool = True
+    backfill_start_date: calendar_date | None = None
+
+
+class CollectionScheduleInput(BaseModel):
+    enabled: bool
+    local_time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    timezone: str = Field(min_length=1, max_length=80)
+
+
 CHART_METHODS = {
     "daily_top_songs": "daily_top_songs",
     "daily_top_artists": "daily_top_artists",
@@ -294,7 +314,7 @@ async def read_selected_entities(entity_type: str | None = None) -> list[dict[st
                 """
                 SELECT entity_uri, entity_type, entity_name, artist_names, image_url
                 FROM public.spotify_chart_selections
-                WHERE entity_type = $1
+                WHERE entity_type = $1 AND is_archived = false
                 ORDER BY entity_name ASC
                 """,
                 entity_type,
@@ -304,6 +324,7 @@ async def read_selected_entities(entity_type: str | None = None) -> list[dict[st
                 """
                 SELECT entity_uri, entity_type, entity_name, artist_names, image_url
                 FROM public.spotify_chart_selections
+                WHERE is_archived = false
                 ORDER BY entity_type ASC, entity_name ASC
                 """
             )
@@ -364,7 +385,8 @@ async def save_selection(selection: SelectionInput) -> dict[str, Any]:
                 entity_type = EXCLUDED.entity_type,
                 entity_name = EXCLUDED.entity_name,
                 artist_names = EXCLUDED.artist_names,
-                image_url = EXCLUDED.image_url
+                image_url = EXCLUDED.image_url,
+                is_archived = false
             RETURNING entity_uri, entity_type, entity_name, artist_names, image_url
             """,
             selection.entity_uri,
@@ -385,13 +407,174 @@ async def remove_selection(entity_uri: str) -> dict[str, bool]:
         raise HTTPException(status_code=400, detail="Choose a valid Spotify song or artist.")
     try:
         pool = await get_history_pool()
-        result = await pool.execute(
-            "DELETE FROM public.spotify_chart_selections WHERE entity_uri = $1",
-            entity_uri,
-        )
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                result = await connection.execute(
+                    "UPDATE public.spotify_chart_selections SET is_archived = true WHERE entity_uri = $1 AND is_archived = false",
+                    entity_uri,
+                )
+                await connection.execute(
+                    "UPDATE public.spotify_chart_tracking_configs SET enabled = false, updated_at = now() WHERE entity_uri = $1",
+                    entity_uri,
+                )
         return {"deleted": result.endswith("1")}
     except Exception as error:
         raise HTTPException(status_code=503, detail="The selection could not be removed right now.") from error
+
+
+@app.get("/api/tracking/configs")
+async def list_tracking_configs() -> list[dict[str, Any]]:
+    require_spotify_connection()
+    pool = await get_history_pool()
+    rows = await pool.fetch(
+        """SELECT c.entity_uri, s.entity_type, s.entity_name, c.chart_type,
+                  c.country_code, c.enabled, c.backfill_start_date, c.updated_at
+           FROM public.spotify_chart_tracking_configs c
+           JOIN public.spotify_chart_selections s ON s.entity_uri = c.entity_uri
+           WHERE s.is_archived = false
+           ORDER BY s.entity_name, c.chart_type, c.country_code"""
+    )
+    return [
+        {**dict(row), "backfill_start_date": row["backfill_start_date"].isoformat() if row["backfill_start_date"] else None,
+         "updated_at": row["updated_at"].isoformat()}
+        for row in rows
+    ]
+
+
+@app.post("/api/tracking/configs")
+async def save_tracking_config(config: TrackingConfigInput) -> dict[str, Any]:
+    require_spotify_connection()
+    if not is_valid_entity_uri(config.entity_uri):
+        raise HTTPException(status_code=400, detail="Choose a valid Spotify entity.")
+    country = config.country_code.upper()
+    if country not in {item.value for item in Countries}:
+        raise HTTPException(status_code=400, detail="Choose a country from the list.")
+    expected_type = HISTORY_CHART_TYPES[config.chart_type]
+    if config.entity_uri.split(":")[1] != expected_type:
+        raise HTTPException(status_code=400, detail="The selected entity type does not match this chart.")
+    pool = await get_history_pool()
+    async with pool.acquire() as connection:
+        row = await connection.fetchrow(
+            """INSERT INTO public.spotify_chart_tracking_configs
+                 (entity_uri, chart_type, country_code, enabled, backfill_start_date)
+               SELECT $1, $2, $3, $4, $5
+               WHERE EXISTS (SELECT 1 FROM public.spotify_chart_selections
+                             WHERE entity_uri = $1 AND is_archived = false)
+               ON CONFLICT (entity_uri, chart_type, country_code) DO UPDATE SET
+                 enabled = EXCLUDED.enabled,
+                 backfill_start_date = COALESCE(EXCLUDED.backfill_start_date,
+                                                 public.spotify_chart_tracking_configs.backfill_start_date),
+                 updated_at = now()
+               RETURNING entity_uri, chart_type, country_code, enabled, backfill_start_date, updated_at""",
+            config.entity_uri, config.chart_type, country, config.enabled, config.backfill_start_date,
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Save the entity to your tracked list before configuring its charts.")
+    return {**dict(row), "backfill_start_date": row["backfill_start_date"].isoformat() if row["backfill_start_date"] else None,
+            "updated_at": row["updated_at"].isoformat()}
+
+
+@app.get("/api/history/overview")
+async def history_overview() -> dict[str, Any]:
+    require_spotify_connection()
+    pool = await get_history_pool()
+    counts = await pool.fetchrow(
+        """SELECT
+             (SELECT count(*) FROM public.spotify_chart_selections WHERE is_archived = false) AS tracked_entities,
+             (SELECT count(*) FROM public.spotify_chart_tracking_configs WHERE enabled = true) AS active_configs,
+             (SELECT count(*) FROM public.spotify_chart_snapshots) AS snapshot_rows,
+             (SELECT count(*) FROM public.spotify_chart_refresh_jobs WHERE status IN ('retry','failed')) AS retry_jobs"""
+    )
+    last_run = await pool.fetchrow(
+        """SELECT id, source, status, started_at, completed_at, requested_chart_keys,
+                  completed_chart_keys, unavailable_chart_keys, failed_chart_keys, summary_error
+           FROM public.spotify_collection_runs ORDER BY id DESC LIMIT 1"""
+    )
+    schedule = await pool.fetchrow(
+        """SELECT enabled, local_time, timezone, next_run_at
+           FROM public.spotify_collection_schedule WHERE singleton = true"""
+    )
+    return {
+        **dict(counts),
+        "lastRun": dict(last_run) if last_run else None,
+        "schedule": dict(schedule) if schedule else None,
+    }
+
+
+@app.post("/api/collection/run")
+async def start_manual_collection() -> dict[str, Any]:
+    require_spotify_connection()
+    pool = await get_history_pool()
+    result = await run_collection_tick(pool, get_spotify_scraper, source="manual")
+    return result or {"status": "not_started"}
+
+
+@app.get("/api/collection/tick")
+async def scheduled_collection_tick(request: Request) -> dict[str, Any]:
+    secret = os.environ.get("CRON_SECRET") or os.environ.get("SPOTIFY_COLLECTION_CRON_SECRET")
+    authorization = request.headers.get("authorization", "")
+    supplied = authorization.removeprefix("Bearer ")
+    if not secret or not secrets.compare_digest(supplied, secret):
+        raise HTTPException(status_code=401, detail="Collection schedule authorization is invalid.")
+    pool = await get_history_pool()
+    result = await run_collection_tick(pool, get_spotify_scraper, source="scheduled")
+    return result or {"status": "not_due"}
+
+
+@app.get("/api/collection/runs")
+async def collection_runs(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0, le=100000),
+) -> dict[str, Any]:
+    require_spotify_connection()
+    pool = await get_history_pool()
+    rows = await pool.fetch(
+        """SELECT id, source, status, started_at, completed_at, requested_chart_keys,
+                  completed_chart_keys, unavailable_chart_keys, failed_chart_keys, summary_error, created_at
+           FROM public.spotify_collection_runs ORDER BY id DESC LIMIT $1 OFFSET $2""",
+        limit, offset,
+    )
+    return {"items": [dict(row) for row in rows], "limit": limit, "offset": offset}
+
+
+@app.get("/api/collection/schedule")
+async def read_collection_schedule() -> dict[str, Any]:
+    require_spotify_connection()
+    pool = await get_history_pool()
+    row = await pool.fetchrow(
+        "SELECT enabled, local_time, timezone, next_run_at FROM public.spotify_collection_schedule WHERE singleton = true"
+    )
+    return dict(row) if row else {"enabled": False, "local_time": "09:00:00", "timezone": "Africa/Algiers", "next_run_at": None}
+
+
+@app.put("/api/collection/schedule")
+async def update_collection_schedule(schedule: CollectionScheduleInput) -> dict[str, Any]:
+    require_spotify_connection()
+    try:
+        zone = ZoneInfo(schedule.timezone)
+        hour, minute = (int(part) for part in schedule.local_time.split(":"))
+    except (ValueError, ZoneInfoNotFoundError) as error:
+        raise HTTPException(status_code=400, detail="Choose a valid IANA timezone and local time.") from error
+
+    now = datetime.now(timezone.utc)
+    local_now = now.astimezone(zone)
+    local_next = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if local_next <= local_now:
+        local_next = local_next + timedelta(days=1)
+    next_run_at = local_next.astimezone(timezone.utc) if schedule.enabled else None
+    pool = await get_history_pool()
+    row = await pool.fetchrow(
+        """INSERT INTO public.spotify_collection_schedule
+             (singleton, enabled, local_time, timezone, next_run_at, updated_at)
+           VALUES (true, $1, $2::time, $3, $4, now())
+           ON CONFLICT (singleton) DO UPDATE SET enabled = EXCLUDED.enabled,
+             local_time = EXCLUDED.local_time, timezone = EXCLUDED.timezone,
+             next_run_at = EXCLUDED.next_run_at, lease_owner = NULL, lease_expires_at = NULL,
+             updated_at = now()
+           RETURNING enabled, local_time, timezone, next_run_at""",
+        schedule.enabled, schedule.local_time, schedule.timezone, next_run_at,
+    )
+    return dict(row)
 
 
 @app.get("/api/search")
@@ -993,6 +1176,8 @@ async def focused_history(
     cadence: Literal["daily", "weekly"] = Query("daily"),
     entity_type: Literal["track", "artist", "album"] = Query("track"),
     range: str = Query("90", min_length=1, max_length=10),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=1000000),
 ) -> dict[str, Any]:
     chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
     start_date = history_start_date(range)
@@ -1001,36 +1186,50 @@ async def focused_history(
         pool = await get_history_pool()
         rows = await pool.fetch(
             f"""
-            SELECT DISTINCT ON (country_code, track_uri)
-                track_uri, entity_type, track_name, artist_names, country_code, chart_date,
-                chart_rank, previous_rank, peak_rank, consecutive_appearances, appearances,
-                entry_date, stream_count
-            FROM public.spotify_chart_snapshots
-            WHERE chart_type = $1 AND entity_type = $2 AND country_code = ANY($3::text[])
-              AND ($4::date IS NULL OR chart_date >= $4::date)
-              AND {focused_history_filter_sql()}
-            ORDER BY country_code, track_uri, chart_date DESC, fetched_at DESC
+            WITH latest_per_market AS (
+                SELECT DISTINCT ON (country_code, track_uri)
+                    track_uri, entity_type, track_name, artist_names, country_code, chart_date,
+                    chart_rank, previous_rank, peak_rank, consecutive_appearances, appearances,
+                    entry_date, stream_count
+                FROM public.spotify_chart_snapshots
+                WHERE chart_type = $1 AND entity_type = $2 AND country_code = ANY($3::text[])
+                  AND ($4::date IS NULL OR chart_date >= $4::date)
+                  AND EXISTS (
+                      SELECT 1 FROM public.spotify_chart_tracking_configs c
+                      WHERE c.entity_uri = spotify_chart_snapshots.track_uri
+                        AND c.chart_type = spotify_chart_snapshots.chart_type
+                        AND c.country_code = spotify_chart_snapshots.country_code
+                        AND c.enabled = true
+                  )
+                ORDER BY country_code, track_uri, chart_date DESC, fetched_at DESC
+            )
+            SELECT *, count(*) OVER() AS total_rows FROM latest_per_market
+            ORDER BY country_code, track_uri LIMIT $5 OFFSET $6
             """,
             chart_type,
             entity_type,
             market_codes,
             start_date,
-            FOCUSED_ARTIST_URIS,
-            FOCUSED_TRACK_URI,
-            FOCUSED_ARTIST_NAMES,
+            limit,
+            offset,
         )
     except Exception as error:
         raise HTTPException(status_code=503, detail="Focused chart history is temporarily unavailable.") from error
 
     points = [history_point(row) for row in rows]
     releases, regions = group_history_points(points)
+    total_rows = int(rows[0]["total_rows"]) if rows else 0
     return {
-        "artist": {"entityName": FOCUSED_ARTIST_NAME},
+        "artist": {"entityName": "Tracked entities"},
         "cadence": cadence,
         "entityType": entity_type,
         "chartType": chart_type,
         "range": range,
         "snapshotRows": len(points),
+        "totalRows": total_rows,
+        "limit": limit,
+        "offset": offset,
+        "hasMore": offset + len(points) < total_rows,
         "releases": releases,
         "regions": regions,
     }
@@ -1045,9 +1244,6 @@ async def focused_history_trend(
 ) -> dict[str, Any]:
     if not is_valid_entity_uri(entity_uri, entity_type):
         raise HTTPException(status_code=400, detail="Choose a valid chart release.")
-    if entity_type == "artist" and entity_uri not in FOCUSED_ARTIST_URIS:
-        raise HTTPException(status_code=404, detail="That artist is outside the focused chart selection.")
-
     chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
     start_date = history_start_date(range)
     market_codes = [country.value for country in Countries]
@@ -1059,7 +1255,13 @@ async def focused_history_trend(
             FROM public.spotify_chart_snapshots
             WHERE chart_type = $1 AND entity_type = $2 AND track_uri = $3
               AND country_code = ANY($4::text[]) AND ($5::date IS NULL OR chart_date >= $5::date)
-              AND (($2 = 'artist' AND $3 = ANY($6::text[])) OR ($2 IN ('track', 'album') AND ($3 = $7 OR string_to_array(COALESCE(artist_names, ''), ', ') && $8::text[])))
+              AND EXISTS (
+                  SELECT 1 FROM public.spotify_chart_tracking_configs c
+                  WHERE c.entity_uri = spotify_chart_snapshots.track_uri
+                    AND c.chart_type = spotify_chart_snapshots.chart_type
+                    AND c.country_code = spotify_chart_snapshots.country_code
+                    AND c.enabled = true
+              )
             ORDER BY country_code ASC, chart_date ASC
             """,
             chart_type,
@@ -1067,9 +1269,6 @@ async def focused_history_trend(
             entity_uri,
             market_codes,
             start_date,
-            FOCUSED_ARTIST_URIS,
-            FOCUSED_TRACK_URI,
-            FOCUSED_ARTIST_NAMES,
         )
     except Exception as error:
         raise HTTPException(status_code=503, detail="Focused chart history is temporarily unavailable.") from error
@@ -1077,7 +1276,7 @@ async def focused_history_trend(
     points = [history_point(row) for row in rows]
     entity = None if not points else {key: points[0][key] for key in ("entityUri", "entityType", "entityName", "artistNames")}
     return {
-        "artist": {"entityName": FOCUSED_ARTIST_NAME},
+        "artist": {"entityName": "Tracked entities"},
         "entity": entity,
         "cadence": cadence,
         "entityType": entity_type,
@@ -1345,7 +1544,7 @@ async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[s
         raise HTTPException(status_code=400, detail="The chart entity list is invalid.")
 
     try:
-        return await run_history_backfill_batch(
+        return await run_durable_history_backfill_batch(
             chart_type,
             country,
             request.target_date,
