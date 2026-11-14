@@ -36,6 +36,8 @@
       .sidebar .nav-link{padding:9px 12px;font-size:12px}
       .focus-toolbar [hidden]{display:none}
       @media(max-width:760px){.sidebar .nav-link{padding:8px 10px}}
+      .chart-search{display:flex;align-items:end;gap:10px;margin:-4px 0 16px}.chart-search .field{flex:1;min-width:180px}.chart-search input{width:100%;min-height:44px;padding:0 13px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text)}.chart-search-button{min-height:44px;padding:0 18px;border:0;border-radius:10px;background:var(--lime);color:#17220f;font-weight:700;cursor:pointer}.chart-search-button:hover{filter:brightness(1.05)}.chart-search-button:disabled,.chart-search input:disabled{opacity:.55;cursor:not-allowed}.chart-search-status{min-height:18px;margin:-7px 0 12px;color:var(--muted);font-size:12px}.chart-search[hidden],.chart-search-status[hidden]{display:none!important}.focused-page .chart-search input{background:#fff;color:var(--text);border-color:#e3e7ed}
+      @media(max-width:560px){.chart-search{align-items:stretch;flex-direction:column}.chart-search .field{min-width:0}}
     </style>
   </head>
   <body>
@@ -69,6 +71,11 @@
           <button class="load-button" id="load-button" type="submit" disabled>Load chart</button>
         </form>
         <div class="summary"><h2 id="section-title">Your chart, at a glance</h2><span class="summary-meta" id="summary-meta">Connect Spotify to get started</span></div>
+        <form class="chart-search" id="chart-search-form" role="search" hidden>
+          <div class="field"><label for="chart-search-input">Search songs or artists</label><input id="chart-search-input" type="search" placeholder="Type a song or artist name" autocomplete="off" disabled /></div>
+          <button class="chart-search-button" id="chart-search-button" type="submit" disabled>Search</button>
+        </form>
+        <p class="chart-search-status" id="chart-search-status" role="status" aria-live="polite" hidden></p>
         <section class="chart-card" aria-label="Spotify chart results">
           <div class="chart-head"><span class="chart-title" id="chart-title">Chart preview</span><span class="chart-date" id="chart-date-label">No chart loaded</span></div>
           <p class="table-scroll-hint" id="table-scroll-hint" aria-live="polite">Swipe or scroll horizontally to see all chart columns.</p>
@@ -278,6 +285,21 @@
           }
         }
       }
+      function applyChartSearch() {
+        const query = byId("chart-search-input").value.trim().toLocaleLowerCase();
+        const rows = [...document.querySelectorAll("#chart-content tbody tr[data-search]")];
+        let visibleCount = 0;
+        rows.forEach((row) => {
+          const matches = !query || row.dataset.search.includes(query);
+          row.hidden = !matches;
+          if (matches) visibleCount += 1;
+        });
+        const status = byId("chart-search-status");
+        status.hidden = rows.length === 0;
+        status.textContent = query
+          ? `${visibleCount} of ${rows.length} chart ${rows.length === 1 ? "entry" : "entries"} match “${byId("chart-search-input").value.trim()}”.`
+          : `Showing all ${rows.length} chart ${rows.length === 1 ? "entry" : "entries"}.`;
+      }
       function renderChart(payload) {
         const metadata = payload.displayChart?.chartMetadata || {};
         const entries = payload.entries || [];
@@ -296,6 +318,10 @@
         byId("summary-meta").textContent = `${entries.length} entries · ${cadence} chart`;
 
         if (!entries.length) {
+          byId("chart-search-form").hidden = true;
+          byId("chart-search-status").hidden = true;
+          byId("chart-search-input").disabled = true;
+          byId("chart-search-button").disabled = true;
           byId("table-scroll-hint").classList.remove("show");
           byId("chart-content").className = "empty";
           byId("history-status").hidden = true;
@@ -316,14 +342,26 @@
           const entityUri = meta.trackUri || meta.artistUri || meta.albumUri || "";
           const movement = chartMovement(stats);
           const releaseDate = meta.releaseDate || "—";
-          return `<tr data-entity-uri="${escapeHtml(entityUri)}"><td class="rank">${escapeHtml(stats.currentRank ?? "—")}</td><td class="movement-cell ${movement.className}" aria-label="${escapeHtml(movement.ariaLabel)}">${escapeHtml(movement.label)}</td><td><div class="track-cell">${image ? `<img class="cover" src="${escapeHtml(image)}" alt="" loading="lazy" />` : '<span class="cover" aria-hidden="true"></span>'}<div>${titleHtml}${artistNames ? `<div class="artist-name">${escapeHtml(artistNames)}</div>` : ""}</div></div></td><td class="metric">${escapeHtml(stats.peakRank ?? "—")}</td><td class="metric">${escapeHtml(stats.previousRank ?? "—")}</td><td class="metric">${escapeHtml(stats.consecutiveAppearancesOnChart ?? "—")}</td><td class="date-cell">${escapeHtml(releaseDate)}</td><td class="date-cell">${escapeHtml(stats.entryDate ?? "—")}</td><td class="metric">${escapeHtml(stats.entryRank ?? "—")}</td><td class="metric">${escapeHtml(stats.appearancesOnChart ?? "—")}</td><td class="metric">${escapeHtml(metric)}</td><td class="metric" data-total-streams>${escapeHtml(totalStreams)}</td></tr>`;
+          const searchText = `${title} ${artistNames}`.toLocaleLowerCase();
+          return `<tr data-entity-uri="${escapeHtml(entityUri)}" data-search="${escapeHtml(searchText)}"><td class="rank">${escapeHtml(stats.currentRank ?? "—")}</td><td class="movement-cell ${movement.className}" aria-label="${escapeHtml(movement.ariaLabel)}">${escapeHtml(movement.label)}</td><td><div class="track-cell">${image ? `<img class="cover" src="${escapeHtml(image)}" alt="" loading="lazy" />` : '<span class="cover" aria-hidden="true"></span>'}<div>${titleHtml}${artistNames ? `<div class="artist-name">${escapeHtml(artistNames)}</div>` : ""}</div></div></td><td class="metric">${escapeHtml(stats.peakRank ?? "—")}</td><td class="metric">${escapeHtml(stats.previousRank ?? "—")}</td><td class="metric">${escapeHtml(stats.consecutiveAppearancesOnChart ?? "—")}</td><td class="date-cell">${escapeHtml(releaseDate)}</td><td class="date-cell">${escapeHtml(stats.entryDate ?? "—")}</td><td class="metric">${escapeHtml(stats.entryRank ?? "—")}</td><td class="metric">${escapeHtml(stats.appearancesOnChart ?? "—")}</td><td class="metric">${escapeHtml(metric)}</td><td class="metric" data-total-streams>${escapeHtml(totalStreams)}</td></tr>`;
         }).join("");
         byId("chart-content").className = "table-wrap";
         const totalAppearancesLabel = metadata.recurrence === "WEEKLY" ? "Total weeks on chart" : "Total days on chart";
         byId("chart-content").innerHTML = `<table><thead><tr><th scope="col">Rank</th><th scope="col">Movement</th><th scope="col">Entry</th><th scope="col">Peak</th><th scope="col">Prev</th><th scope="col">Streak</th><th scope="col">Release Date</th><th scope="col">First entry date</th><th scope="col">First entry position</th><th scope="col">${totalAppearancesLabel}</th><th scope="col">${escapeHtml(metricLabel)}</th><th scope="col" title="Selected chart history for this entity in this market.">${historyInfo?.metric === "rank" ? "Rank history" : "Total chart streams"}</th></tr></thead><tbody>${rows}</tbody></table>`;
+        byId("chart-search-form").hidden = false;
+        byId("chart-search-input").disabled = false;
+        byId("chart-search-button").disabled = false;
+        applyChartSearch();
         updateChartHistoryStatus(historyInfo);
         updateTableScrollHint();
       }
+      byId("chart-search-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!byId("chart-search-input").disabled) applyChartSearch();
+      });
+      byId("chart-search-input").addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && (event.isComposing || event.keyCode === 229)) event.preventDefault();
+      });
       byId("connect-button").addEventListener("click", () => {
         if (appStatus?.configured) {
           window.open("/auth/login", "_blank", "noopener,noreferrer");
