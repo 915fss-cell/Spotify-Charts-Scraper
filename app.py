@@ -599,81 +599,18 @@ async def load_focused_snapshot(cadence: str, entity_type: str) -> dict[str, Any
         cadence,
         entity_type,
     )
-    if row is not None:
-        payload = row["payload"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        if isinstance(payload, dict):
-            cached_payload = dict(payload)
-            cached_payload["snapshotReused"] = True
-            cached_payload["snapshotFetchedAt"] = row["fetched_at"].isoformat()
-            return cached_payload
-
-    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
-    market_codes = [country.value for country in Countries]
-    fresh_markets = await pool.fetch(
-        """
-        SELECT country_code, max(fetched_at) AS fetched_at
-        FROM public.spotify_chart_snapshots
-        WHERE chart_type = $1 AND country_code = ANY($2::text[])
-          AND fetched_at >= date_trunc('day', now())
-        GROUP BY country_code
-        """,
-        chart_type,
-        market_codes,
-    )
-    if len(fresh_markets) < max(2, len(market_codes) // 2):
+    if row is None:
         return None
 
-    rows = await pool.fetch(
-        f"""
-        SELECT DISTINCT ON (country_code, track_uri)
-            track_uri, entity_type, track_name, artist_names, country_code,
-            chart_date, chart_rank, stream_count, fetched_at
-        FROM public.spotify_chart_snapshots
-        WHERE chart_type = $1 AND entity_type = $2 AND country_code = ANY($3::text[])
-          AND fetched_at >= date_trunc('day', now())
-          AND ($4::date IS NULL OR chart_date >= $4::date)
-          AND {focused_history_filter_sql()}
-        ORDER BY country_code, track_uri, fetched_at DESC, chart_date DESC
-        """,
-        chart_type,
-        entity_type,
-        market_codes,
-        None,
-        FOCUSED_ARTIST_URIS,
-        FOCUSED_TRACK_URI,
-        FOCUSED_ARTIST_NAMES,
-    )
-    points = [history_point(snapshot) for snapshot in rows]
-    releases, regions = group_history_points(points)
-    updated_markets = {market["country_code"] for market in fresh_markets}
-    failed_regions = [
-        COUNTRY_NAMES.get(country.value, country.value)
-        for country in Countries
-        if country.value not in updated_markets
-    ]
-    cached_payload = {
-        "artist": {"entityName": FOCUSED_ARTIST_NAME},
-        "cadence": cadence,
-        "entityType": entity_type,
-        "chartType": chart_type,
-        "marketScope": "all",
-        "marketsTotal": len(market_codes),
-        "marketsScanned": len(updated_markets),
-        "matchingRegions": len(regions),
-        "failedRegions": failed_regions,
-        "historySavedRegions": len(updated_markets),
-        "historyStorageAvailable": True,
-        "releases": releases,
-        "regions": regions,
-        "scanInProgress": False,
-        "snapshotReused": True,
-        "snapshotFetchedAt": max(market["fetched_at"] for market in fresh_markets).isoformat(),
-    }
-    if not rows:
+    payload = row["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, dict) or payload.get("snapshotVersion") != 2:
         return None
-    await save_focused_snapshot(cadence, entity_type, cached_payload)
+
+    cached_payload = dict(payload)
+    cached_payload["snapshotReused"] = True
+    cached_payload["snapshotFetchedAt"] = row["fetched_at"].isoformat()
     return cached_payload
 
 
@@ -698,6 +635,7 @@ async def run_focused_scan_and_cache(cache_key: tuple[str, str, str], cadence: s
         response = await scan_focused_live(cadence, entity_type, scope)
         if scope == "all" and response["marketsScanned"] > 0:
             try:
+                response["snapshotVersion"] = 2
                 await save_focused_snapshot(cadence, entity_type, response)
             except Exception as error:
                 print(f"[v0] Focused chart snapshot could not be saved: {type(error).__name__}")
