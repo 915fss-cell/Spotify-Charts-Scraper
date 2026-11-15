@@ -88,6 +88,96 @@ async def _retry_claimed_job(
     )
 
 
+async def _process_pending_history_jobs(
+    pool: asyncpg.Pool,
+    scraper: SpotifyCharts,
+    owner: str,
+    limit: int,
+) -> tuple[int, int, list[str]]:
+    if limit <= 0:
+        return 0, 0, []
+    candidates = await pool.fetch(
+        """SELECT chart_type, country_code, requested_date
+           FROM public.spotify_chart_refresh_jobs
+           WHERE requested_date <> 'latest'
+             AND ((status IN ('pending', 'retry', 'failed') AND next_attempt_at <= now())
+               OR (status = 'running' AND lease_expires_at < now()))
+           ORDER BY next_attempt_at, updated_at
+           LIMIT $1""",
+        limit,
+    )
+    completed = 0
+    failed = 0
+    errors: list[str] = []
+    for candidate in candidates:
+        chart_type = candidate["chart_type"]
+        country = candidate["country_code"]
+        requested_date = candidate["requested_date"]
+        claimed = await pool.fetchrow(
+            """UPDATE public.spotify_chart_refresh_jobs
+               SET status = 'running', lease_owner = $4,
+                   lease_expires_at = now() + $5::interval,
+                   attempt_count = attempt_count + 1, updated_at = now()
+               WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3
+                 AND ((status IN ('pending', 'retry', 'failed') AND next_attempt_at <= now())
+                   OR (status = 'running' AND lease_expires_at < now()))
+               RETURNING attempt_count""",
+            chart_type, country, requested_date, owner, COLLECTION_LEASE,
+        )
+        if claimed is None:
+            continue
+        try:
+            payload = await getattr(scraper, chart_type)(country, requested_date)
+            entries = payload.get("entries") if isinstance(payload, dict) else None
+            display_chart = payload.get("displayChart") if isinstance(payload, dict) else None
+            response_date = parse_chart_date(
+                display_chart.get("date") if isinstance(display_chart, dict) else payload.get("date")
+            )
+            if not isinstance(entries, list) or response_date is None or response_date.isoformat() != requested_date:
+                raise ValueError("The returned chart did not match its requested date.")
+            entity_uris = await pool.fetchval(
+                """SELECT array_agg(entity_uri ORDER BY entity_uri)
+                   FROM public.spotify_chart_tracking_configs
+                   WHERE enabled = true AND chart_type = $1 AND country_code = $2""",
+                chart_type, country,
+            ) or []
+            async with pool.acquire() as connection:
+                async with connection.transaction():
+                    await connection.execute(
+                        """INSERT INTO public.spotify_chart_payload_cache
+                             (chart_type, country_code, requested_date, payload, chart_date, fetched_at)
+                           VALUES ($1, $2, $3, $4::jsonb, $5, now())
+                           ON CONFLICT (chart_type, country_code, requested_date) DO UPDATE SET
+                             payload = EXCLUDED.payload, chart_date = EXCLUDED.chart_date,
+                             fetched_at = EXCLUDED.fetched_at""",
+                        chart_type, country, requested_date,
+                        json.dumps(payload, separators=(",", ":")), response_date,
+                    )
+                    await save_chart_snapshot(
+                        pool, chart_type, country, response_date, entries,
+                        allowed_entity_uris=set(entity_uris), connection=connection,
+                    )
+                    await connection.execute(
+                        """UPDATE public.spotify_chart_refresh_jobs SET status = 'succeeded',
+                             chart_date = $5, response_chart_date = $5, completed_at = now(),
+                             fetched_at = now(), last_http_status = 200, last_error = NULL,
+                             lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+                           WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3
+                             AND lease_owner = $4""",
+                        chart_type, country, requested_date, owner, response_date,
+                    )
+            completed += 1
+        except Exception as error:
+            failed += 1
+            message = f"History retry failed ({type(error).__name__})."
+            await _retry_claimed_job(
+                pool, chart_type, country, requested_date, owner, message,
+                error.response.status_code if isinstance(error, httpx.HTTPStatusError) else None,
+            )
+            errors.append(f"{chart_type}/{country}/{requested_date}: {type(error).__name__}")
+    return completed, failed, errors
+
+
 async def run_collection_tick(
     pool: asyncpg.Pool,
     scraper_factory: Callable[[], Awaitable[SpotifyCharts]],
@@ -100,17 +190,6 @@ async def run_collection_tick(
     if started is None:
         return None
     run_id, owner = started
-    config_rows = await pool.fetch(
-        """SELECT chart_type, country_code, array_agg(entity_uri ORDER BY entity_uri) AS entity_uris
-           FROM public.spotify_chart_tracking_configs
-           WHERE enabled = true AND chart_type = ANY($1::text[])
-           GROUP BY chart_type, country_code
-           ORDER BY chart_type, country_code
-           LIMIT $2""",
-        list(CHART_STEPS),
-        max_chart_keys,
-    )
-    requested = len(config_rows)
     completed = 0
     unavailable = 0
     failed = 0
@@ -128,6 +207,24 @@ async def run_collection_tick(
         if source == "scheduled":
             await _release_schedule(pool, owner)
         raise HTTPException(status_code=502, detail="Spotify authorization is unavailable for collection.") from error
+
+    history_completed, history_failed, history_errors = await _process_pending_history_jobs(
+        pool, scraper, owner, max_chart_keys
+    )
+    completed += history_completed
+    failed += history_failed
+    error_messages.extend(history_errors)
+    config_rows = await pool.fetch(
+        """SELECT chart_type, country_code, array_agg(entity_uri ORDER BY entity_uri) AS entity_uris
+           FROM public.spotify_chart_tracking_configs
+           WHERE enabled = true AND chart_type = ANY($1::text[])
+           GROUP BY chart_type, country_code
+           ORDER BY chart_type, country_code
+           LIMIT $2""",
+        list(CHART_STEPS),
+        max(0, max_chart_keys - history_completed - history_failed),
+    )
+    requested = history_completed + history_failed + len(config_rows)
 
     for config in config_rows:
         chart_type = config["chart_type"]

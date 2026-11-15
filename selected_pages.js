@@ -18,6 +18,7 @@
   let historyEntitiesOffset = 0;
   let historyEntityDetailOffset = 0;
   let collectionRunsOffset = 0;
+  let collectionJobsOffset = 0;
   let selectedHistoryEntityUri = "";
   let trackedEntityChart = null;
   const HISTORY_PAGE_SIZE = 50;
@@ -382,6 +383,41 @@
     }
   }
 
+  async function loadCollectionJobs() {
+    const params = new URLSearchParams({
+      status: byId("collection-job-status").value,
+      limit: "10",
+      offset: String(collectionJobsOffset),
+    });
+    const chartType = byId("collection-job-chart").value;
+    const country = byId("collection-job-country").value;
+    const from = byId("collection-job-from").value;
+    const to = byId("collection-job-to").value;
+    if (chartType) params.set("chart_type", chartType);
+    if (country) params.set("country", country);
+    if (from) params.set("date_from", from);
+    if (to) params.set("date_to", to);
+    const payload = await requestJson(`/api/collection/jobs?${params}`);
+    byId("collection-jobs-list").innerHTML = payload.items.length ? payload.items.map((job) => {
+      const canRetry = ["retry", "failed", "unavailable"].includes(job.status) && job.requested_date !== "latest";
+      const date = job.chart_date || job.requested_date || "Date unknown";
+      const retryButton = canRetry
+        ? `<button class="quiet-button" type="button" data-retry-chart-job data-chart-type="${escapeHtml(job.chart_type)}" data-country="${escapeHtml(job.country_code)}" data-requested-date="${escapeHtml(job.requested_date)}">${job.status === "unavailable" ? "Recheck date" : "Retry now"}</button>`
+        : "";
+      const detail = [job.last_http_status ? `HTTP ${job.last_http_status}` : "", job.last_error || "", job.next_attempt_at ? `Next attempt ${new Date(job.next_attempt_at).toLocaleString()}` : ""]
+        .filter(Boolean).join(" · ");
+      return `<div class="history-run-row"><span>${escapeHtml(date)} · ${escapeHtml(job.chart_type.replaceAll("_", " "))} · ${escapeHtml(job.country_code)} · ${escapeHtml(job.status)}${detail ? `<small class="history-run-error">${escapeHtml(detail)}</small>` : ""}</span><span>${Number(job.attempt_count || 0)} attempts ${retryButton}</span></div>`;
+    }).join("") : '<p class="history-empty-row">No chart-date jobs match these filters.</p>';
+    const pagination = byId("collection-jobs-pagination");
+    pagination.hidden = payload.total <= 10;
+    byId("collection-jobs-page-label").textContent = payload.total
+      ? `${collectionJobsOffset + 1}–${collectionJobsOffset + payload.items.length} of ${Number(payload.total).toLocaleString()} jobs`
+      : "No chart-date jobs";
+    byId("collection-jobs-page-indicator").textContent = byId("collection-jobs-page-label").textContent;
+    byId("collection-jobs-previous").disabled = collectionJobsOffset === 0;
+    byId("collection-jobs-next").disabled = !payload.hasMore;
+  }
+
   async function loadHistoryManagement() {
     try {
       const [overview, configs, selections, countries, runs, schedule] = await Promise.all([
@@ -403,6 +439,7 @@
         ? selections.map((entity) => `<option value="${escapeHtml(entity.entityUri)}" data-type="${escapeHtml(entity.entityType)}">${escapeHtml(entity.entityName)} · ${escapeHtml(entity.entityType)}</option>`).join("")
         : '<option value="">Save an entity first</option>';
       byId("tracking-country").innerHTML = countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+      byId("collection-job-country").innerHTML = '<option value="">All markets</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
       byId("history-detail-country").innerHTML = '<option value="">All markets</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
       byId("history-detail-chart").innerHTML = '<option value="">All charts</option>' + [
         ["daily_top_songs", "Daily top songs"], ["weekly_top_songs", "Weekly top songs"],
@@ -439,6 +476,9 @@
       byId("collection-timezone").value = schedule.timezone || "Africa/Algiers";
       byId("collection-enabled").checked = Boolean(schedule.enabled);
       void loadHistoryEntities();
+      void loadCollectionJobs().catch((error) => {
+        byId("collection-jobs-list").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
+      });
     } catch (error) {
       byId("history-overview-grid").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
     }
@@ -811,6 +851,41 @@
   byId("collection-runs-next").addEventListener("click", () => {
     collectionRunsOffset += 8;
     void loadHistoryManagement();
+  });
+  byId("collection-jobs-filter").addEventListener("submit", (event) => {
+    event.preventDefault();
+    collectionJobsOffset = 0;
+    void loadCollectionJobs().catch((error) => setStatus("selected-history-status", error.message, true));
+  });
+  byId("collection-jobs-previous").addEventListener("click", () => {
+    collectionJobsOffset = Math.max(0, collectionJobsOffset - 10);
+    void loadCollectionJobs().catch((error) => setStatus("selected-history-status", error.message, true));
+  });
+  byId("collection-jobs-next").addEventListener("click", () => {
+    collectionJobsOffset += 10;
+    void loadCollectionJobs().catch((error) => setStatus("selected-history-status", error.message, true));
+  });
+  byId("collection-jobs-list").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-retry-chart-job]");
+    if (!button) return;
+    button.disabled = true;
+    try {
+      await requestJson("/api/collection/jobs/retry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chart_type: button.dataset.chartType,
+          country_code: button.dataset.country,
+          requested_date: button.dataset.requestedDate,
+        }),
+      });
+      setStatus("selected-history-status", "Chart date queued for an explicit retry. It will be processed by a collection run.");
+      await loadCollectionJobs();
+      await loadHistoryManagement();
+    } catch (error) {
+      button.disabled = false;
+      setStatus("selected-history-status", error.message, true);
+    }
   });
   byId("history-entity-detail-previous").addEventListener("click", () => {
     historyEntityDetailOffset = Math.max(0, historyEntityDetailOffset - HISTORY_ENTITY_DETAIL_PAGE_SIZE);
