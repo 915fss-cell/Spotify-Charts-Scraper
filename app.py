@@ -1742,6 +1742,97 @@ async def refresh_chart(
         return {"status": "failed", "retryAfterSeconds": delay, "error": "Refresh failed; the saved chart is unchanged."}
 
 
+async def chart_history_backfill_queue_summary(pool: Any) -> dict[str, int]:
+    row = await pool.fetchrow(
+        """SELECT count(*) AS total_jobs,
+                  count(*) FILTER (WHERE status = 'complete') AS complete_jobs,
+                  count(*) FILTER (WHERE status IN ('pending', 'paused', 'running')) AS active_jobs,
+                  coalesce(sum(greatest(total_dates - processed_dates, 0)), 0) AS remaining_dates
+           FROM public.spotify_chart_backfills"""
+    )
+    return {
+        "totalJobs": int(row["total_jobs"] or 0),
+        "completeJobs": int(row["complete_jobs"] or 0),
+        "activeJobs": int(row["active_jobs"] or 0),
+        "remainingDates": int(row["remaining_dates"] or 0),
+    }
+
+
+@app.get("/api/chart-history/backfill/queue")
+async def chart_history_backfill_queue() -> dict[str, int]:
+    require_spotify_connection()
+    return await chart_history_backfill_queue_summary(await get_history_pool())
+
+
+@app.post("/api/chart-history/backfill/queue/step")
+async def chart_history_backfill_queue_step() -> dict[str, Any]:
+    require_spotify_connection()
+    pool = await get_history_pool()
+    job = await pool.fetchrow(
+        """SELECT chart_type, country_code, start_date, target_date, next_date
+           FROM public.spotify_chart_backfills
+           WHERE status IN ('pending', 'paused')
+              OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at < now()))
+           ORDER BY updated_at, chart_type, country_code
+           LIMIT 1"""
+    )
+    if job is None:
+        queue = await chart_history_backfill_queue_summary(pool)
+        if queue["remainingDates"] == 0:
+            return {"state": "complete", "queue": queue}
+        wait = await pool.fetchrow(
+            """SELECT ceil(extract(epoch FROM (wait_until - now()))) AS retry_after_seconds
+               FROM (
+                 SELECT min(lease_expires_at) AS wait_until
+                 FROM public.spotify_chart_backfills
+                 WHERE status = 'running' AND lease_expires_at > now()
+                 UNION ALL
+                 SELECT min(next_attempt_at) AS wait_until
+                 FROM public.spotify_chart_refresh_jobs
+                 WHERE status = 'retry' AND next_attempt_at > now()
+               ) waits
+               WHERE wait_until IS NOT NULL
+               ORDER BY wait_until
+               LIMIT 1"""
+        )
+        return {
+            "state": "waiting",
+            "queue": queue,
+            "retryAfterSeconds": max(1, int(wait["retry_after_seconds"] or 30)) if wait else 30,
+        }
+
+    if job["chart_type"] not in HISTORY_CHART_TYPES:
+        raise HTTPException(status_code=409, detail="The backfill queue contains an unsupported chart type.")
+    try:
+        progress = await run_durable_history_backfill_batch(
+            job["chart_type"], job["country_code"], job["target_date"], job["start_date"],
+            None, get_spotify_scraper,
+        )
+    except ChartHistoryStorageError as error:
+        raise HTTPException(status_code=503, detail="Historical storage is unavailable.") from error
+
+    queue = await chart_history_backfill_queue_summary(pool)
+    if progress.get("error"):
+        retry = await pool.fetchrow(
+            """SELECT ceil(extract(epoch FROM (next_attempt_at - now()))) AS retry_after_seconds
+               FROM public.spotify_chart_refresh_jobs
+               WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3
+                 AND status = 'retry' AND next_attempt_at > now()""",
+            job["chart_type"], job["country_code"], progress.get("nextDate", job["next_date"].isoformat()),
+        )
+        return {
+            "state": "waiting",
+            "batch": {**progress, "chartType": job["chart_type"], "country": job["country_code"]},
+            "queue": queue,
+            "retryAfterSeconds": max(1, int(retry["retry_after_seconds"] or 30)) if retry else 30,
+        }
+    return {
+        "state": "complete" if queue["remainingDates"] == 0 else "batch",
+        "batch": {**progress, "chartType": job["chart_type"], "country": job["country_code"]},
+        "queue": queue,
+    }
+
+
 @app.post("/api/chart-history/backfill")
 async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[str, Any]:
     chart_type = request.chart_type
