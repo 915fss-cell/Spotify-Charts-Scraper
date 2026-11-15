@@ -1,9 +1,15 @@
 import unittest
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import httpx
 
 from chart_history import save_chart_snapshot, snapshot_values
-from collection_worker import _process_pending_history_jobs, next_schedule_time
+from collection_worker import (
+    _process_pending_history_jobs,
+    _release_schedule,
+    _start_run,
+    next_schedule_time,
+    run_collection_tick,
+)
 from spotify_charts import parse_retry_after_delay
 
 
@@ -36,15 +42,81 @@ class RecordingPool:
         self.entity_uris = entity_uris or ["spotify:track:0123456789abcdef"]
         self.connection = RecordingConnection()
         self.executed = []
+        self.fetchrow_queries = []
 
     async def fetch(self, query, *args):
         return [self.job]
 
     async def fetchrow(self, query, *args):
+        self.fetchrow_queries.append(query)
         return {"attempt_count": 1}
 
     async def fetchval(self, query, *args):
         return self.entity_uris
+
+    async def execute(self, query, *args):
+        self.executed.append((query, args))
+
+    def acquire(self):
+        return self
+
+    async def __aenter__(self):
+        return self.connection
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class RunLifecycleConnection:
+    def __init__(self, schedule=None):
+        self.schedule = schedule
+        self.executed = []
+        self.executemany_calls = []
+        self.fetchval_calls = []
+
+    def transaction(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def fetchrow(self, query, *args):
+        if "spotify_collection_schedule" in query:
+            return self.schedule
+        if "UPDATE public.spotify_chart_refresh_jobs" in query:
+            return {"attempt_count": 1}
+        return None
+
+    async def fetchval(self, query, *args):
+        self.fetchval_calls.append((query, args))
+        if "INSERT INTO public.spotify_collection_runs" in query:
+            return 91
+        return None
+
+    async def execute(self, query, *args):
+        self.executed.append((query, args))
+
+    async def executemany(self, query, rows):
+        self.executemany_calls.append((query, rows))
+
+
+class RunLifecyclePool:
+    def __init__(self, fetch_responses=None, schedule=None):
+        self.fetch_responses = list(fetch_responses or [])
+        self.connection = RunLifecycleConnection(schedule)
+        self.executed = []
+
+    async def fetch(self, query, *args):
+        return self.fetch_responses.pop(0) if self.fetch_responses else []
+
+    async def fetchrow(self, query, *args):
+        return None
+
+    async def fetchval(self, query, *args):
+        return None
 
     async def execute(self, query, *args):
         self.executed.append((query, args))
@@ -106,6 +178,25 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(pool.connection.rows), 1)
         self.assertIn("DO NOTHING", pool.connection.query)
         self.assertIn("status = 'succeeded'", pool.connection.executed[-1][0])
+
+    async def test_expired_history_job_lease_is_reclaimed(self):
+        job = {
+            "chart_type": "daily_top_songs",
+            "country_code": "GLOBAL",
+            "requested_date": "2026-11-14",
+        }
+
+        class Scraper:
+            async def daily_top_songs(self, country, requested_date):
+                return {"displayChart": {"date": requested_date}, "entries": []}
+
+        pool = RecordingPool(job)
+
+        result = await _process_pending_history_jobs(pool, Scraper(), "worker-2", 1)
+
+        self.assertEqual(result, (1, 0, []))
+        self.assertIn("status = 'running' AND lease_expires_at < now()", pool.fetchrow_queries[0])
+        self.assertIn("lease_owner = $4", pool.fetchrow_queries[0])
 
     async def test_stale_spotify_authorization_keeps_date_job_retryable(self):
         from fastapi import HTTPException
@@ -301,6 +392,96 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(connection.rows), 1)
         self.assertIn("ON CONFLICT (chart_type, country_code, chart_date, track_uri) DO NOTHING", connection.query)
         self.assertNotIn("DO UPDATE", connection.query)
+
+    async def test_scheduled_run_claims_due_schedule_and_creates_a_run(self):
+        now = datetime.now(timezone.utc)
+        pool = RunLifecyclePool(schedule={
+            "enabled": True,
+            "local_time": time(9, 0),
+            "timezone": "UTC",
+            "next_run_at": now - timedelta(seconds=1),
+            "lease_expires_at": now - timedelta(minutes=1),
+        })
+
+        result = await _start_run(pool, "scheduled")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], 91)
+        self.assertTrue(result[1])
+        self.assertEqual(len(pool.connection.executed), 1)
+        self.assertIn("lease_expires_at", pool.connection.executed[0][0])
+        self.assertIn("INSERT INTO public.spotify_collection_runs", pool.connection.fetchval_calls[0][0])
+
+    async def test_scheduled_run_skips_when_another_worker_holds_the_lease(self):
+        now = datetime.now(timezone.utc)
+        pool = RunLifecyclePool(schedule={
+            "enabled": True,
+            "local_time": time(9, 0),
+            "timezone": "UTC",
+            "next_run_at": now - timedelta(minutes=1),
+            "lease_expires_at": now + timedelta(minutes=2),
+        })
+
+        result = await _start_run(pool, "scheduled")
+
+        self.assertIsNone(result)
+        self.assertEqual(pool.connection.executed, [])
+        self.assertEqual(pool.connection.fetchval_calls, [])
+
+    async def test_schedule_release_calculates_next_run_and_clears_lease(self):
+        pool = RunLifecyclePool(schedule={
+            "enabled": True,
+            "local_time": time(9, 0),
+            "timezone": "Africa/Algiers",
+        })
+
+        await _release_schedule(pool, "worker-1")
+
+        query, args = pool.connection.executed[0]
+        self.assertIn("lease_owner = NULL", query)
+        self.assertGreater(args[0], datetime.now(timezone.utc))
+        self.assertEqual(args[1], "worker-1")
+
+    async def test_collection_run_records_partial_success_and_failure(self):
+        first_uri = "spotify:track:0123456789abcdef"
+        configs = [
+            {"chart_type": "daily_top_songs", "country_code": "GLOBAL", "entity_uris": [first_uri]},
+            {"chart_type": "daily_top_songs", "country_code": "US", "entity_uris": [first_uri]},
+        ]
+        pool = RunLifecyclePool(fetch_responses=[[], configs])
+
+        class Scraper:
+            async def daily_top_songs(self, country, requested_date):
+                if country == "US":
+                    response = httpx.Response(
+                        503,
+                        request=httpx.Request("GET", "https://charts.example.test"),
+                    )
+                    raise httpx.HTTPStatusError("temporary failure", request=response.request, response=response)
+                return {
+                    "displayChart": {"date": "2026-11-15"},
+                    "entries": [{
+                        "trackMetadata": {"trackUri": first_uri, "trackName": "Example song"},
+                        "chartEntryData": {
+                            "rankingMetric": {"type": "STREAMS", "value": "12"},
+                            "currentRank": 1,
+                        },
+                    }],
+                }
+
+        async def scraper_factory():
+            return Scraper()
+
+        result = await run_collection_tick(pool, scraper_factory, source="manual", max_chart_keys=2)
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["requestedChartKeys"], 2)
+        self.assertEqual(result["completedChartKeys"], 1)
+        self.assertEqual(result["unavailableChartKeys"], 0)
+        self.assertEqual(result["failedChartKeys"], 1)
+        run_update = next(item for item in pool.executed if "UPDATE public.spotify_collection_runs" in item[0])
+        self.assertEqual(run_update[1][1:6], ("partial", 2, 1, 0, 1))
+        self.assertEqual(len(pool.connection.executemany_calls[0][1]), 1)
 
 
 if __name__ == "__main__":
