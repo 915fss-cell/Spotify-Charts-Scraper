@@ -474,6 +474,133 @@ async def save_tracking_config(config: TrackingConfigInput) -> dict[str, Any]:
             "updated_at": row["updated_at"].isoformat()}
 
 
+@app.get("/api/history/entities")
+async def history_entities(
+    q: str = Query("", max_length=80),
+    entity_type: Literal["all", "track", "artist"] = Query("all"),
+    sort: Literal["name", "appearances", "latest"] = Query("latest"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0, le=100000),
+) -> dict[str, Any]:
+    require_spotify_connection()
+    pool = await get_history_pool()
+    search = q.strip()
+    total = await pool.fetchval(
+        """SELECT count(*) FROM public.spotify_chart_selections s
+           WHERE s.is_archived = false
+             AND ($1 = '' OR s.entity_name ILIKE '%' || $1 || '%' OR s.entity_uri ILIKE '%' || $1 || '%')
+             AND ($2 = 'all' OR s.entity_type = $2)""",
+        search, entity_type,
+    )
+    sort_column = {
+        "name": "s.entity_name ASC",
+        "appearances": "appearance_count DESC NULLS LAST, s.entity_name ASC",
+        "latest": "latest_appearance DESC NULLS LAST, s.entity_name ASC",
+    }[sort]
+    rows = await pool.fetch(
+        f"""SELECT s.entity_uri, s.entity_type, s.entity_name, s.artist_names,
+                   COALESCE(h.appearance_count, 0)::int AS appearance_count,
+                   h.latest_appearance, h.peak_rank,
+                   (SELECT count(*)::int FROM public.spotify_chart_tracking_configs c
+                    WHERE c.entity_uri = s.entity_uri AND c.enabled = true) AS active_configs
+            FROM public.spotify_chart_selections s
+            LEFT JOIN LATERAL (
+              SELECT count(*)::int AS appearance_count, max(chart_date) AS latest_appearance,
+                     min(chart_rank) AS peak_rank
+              FROM public.spotify_chart_snapshots
+              WHERE track_uri = s.entity_uri
+            ) h ON true
+            WHERE s.is_archived = false
+              AND ($1 = '' OR s.entity_name ILIKE '%' || $1 || '%' OR s.entity_uri ILIKE '%' || $1 || '%')
+              AND ($2 = 'all' OR s.entity_type = $2)
+            ORDER BY {sort_column}
+            LIMIT $3 OFFSET $4""",
+        search, entity_type, limit, offset,
+    )
+    return {
+        "items": [
+            {**dict(row), "latest_appearance": row["latest_appearance"].isoformat() if row["latest_appearance"] else None}
+            for row in rows
+        ],
+        "total": int(total or 0),
+        "limit": limit,
+        "offset": offset,
+        "hasMore": offset + len(rows) < int(total or 0),
+    }
+
+
+@app.get("/api/history/entity")
+async def history_entity_detail(
+    entity_uri: str = Query(..., min_length=16, max_length=128),
+    country: str | None = Query(None, min_length=2, max_length=6),
+    chart_type: str | None = Query(None),
+    date_from: calendar_date | None = Query(None),
+    date_to: calendar_date | None = Query(None),
+    limit: int = Query(120, ge=1, le=365),
+    offset: int = Query(0, ge=0, le=100000),
+) -> dict[str, Any]:
+    require_spotify_connection()
+    if not is_valid_entity_uri(entity_uri):
+        raise HTTPException(status_code=400, detail="Choose a valid tracked Spotify entity.")
+    if chart_type is not None and chart_type not in HISTORY_CHART_TYPES:
+        raise HTTPException(status_code=400, detail="Choose a supported history chart.")
+    if country is not None:
+        country = country.upper()
+        if country not in {item.value for item in Countries}:
+            raise HTTPException(status_code=400, detail="Choose a country from the list.")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=400, detail="The start date must be before the end date.")
+
+    pool = await get_history_pool()
+    entity = await pool.fetchrow(
+        """SELECT entity_uri, entity_type, entity_name, artist_names, is_archived
+           FROM public.spotify_chart_selections WHERE entity_uri = $1""",
+        entity_uri,
+    )
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Tracked entity was not found.")
+    filters = (entity_uri, country, chart_type, date_from, date_to)
+    summary = await pool.fetchrow(
+        """SELECT count(*)::int AS appearances, min(chart_rank) AS peak_rank,
+                  min(chart_date) AS first_appearance, max(chart_date) AS latest_appearance,
+                  count(stream_count)::int AS measured_stream_appearances
+           FROM public.spotify_chart_snapshots
+           WHERE track_uri = $1 AND ($2::text IS NULL OR country_code = $2)
+             AND ($3::text IS NULL OR chart_type = $3)
+             AND ($4::date IS NULL OR chart_date >= $4)
+             AND ($5::date IS NULL OR chart_date <= $5)""",
+        *filters,
+    )
+    total = int(summary["appearances"] or 0)
+    rows = await pool.fetch(
+        """SELECT chart_type, country_code, chart_date, chart_rank, stream_count
+           FROM public.spotify_chart_snapshots
+           WHERE track_uri = $1 AND ($2::text IS NULL OR country_code = $2)
+             AND ($3::text IS NULL OR chart_type = $3)
+             AND ($4::date IS NULL OR chart_date >= $4)
+             AND ($5::date IS NULL OR chart_date <= $5)
+           ORDER BY chart_date DESC, country_code, chart_type
+           LIMIT $6 OFFSET $7""",
+        *filters, limit, offset,
+    )
+    return {
+        "entity": dict(entity),
+        "summary": {
+            **dict(summary),
+            "first_appearance": summary["first_appearance"].isoformat() if summary["first_appearance"] else None,
+            "latest_appearance": summary["latest_appearance"].isoformat() if summary["latest_appearance"] else None,
+        },
+        "items": [
+            {**dict(row), "chart_date": row["chart_date"].isoformat()}
+            for row in rows
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "hasMore": offset + len(rows) < total,
+    }
+
+
 @app.get("/api/history/overview")
 async def history_overview() -> dict[str, Any]:
     require_spotify_connection()
@@ -528,13 +655,20 @@ async def collection_runs(
 ) -> dict[str, Any]:
     require_spotify_connection()
     pool = await get_history_pool()
+    total = int(await pool.fetchval("SELECT count(*) FROM public.spotify_collection_runs") or 0)
     rows = await pool.fetch(
         """SELECT id, source, status, started_at, completed_at, requested_chart_keys,
                   completed_chart_keys, unavailable_chart_keys, failed_chart_keys, summary_error, created_at
            FROM public.spotify_collection_runs ORDER BY id DESC LIMIT $1 OFFSET $2""",
         limit, offset,
     )
-    return {"items": [dict(row) for row in rows], "limit": limit, "offset": offset}
+    return {
+        "items": [dict(row) for row in rows],
+        "limit": limit,
+        "offset": offset,
+        "total": total,
+        "hasMore": offset + len(rows) < total,
+    }
 
 
 @app.get("/api/collection/schedule")

@@ -15,7 +15,14 @@
   let isAutoRegionScanning = false;
   let historyRequest = 0;
   let historyOffset = 0;
+  let historyEntitiesOffset = 0;
+  let historyEntityDetailOffset = 0;
+  let collectionRunsOffset = 0;
+  let selectedHistoryEntityUri = "";
+  let trackedEntityChart = null;
   const HISTORY_PAGE_SIZE = 50;
+  const HISTORY_ENTITY_PAGE_SIZE = 20;
+  const HISTORY_ENTITY_DETAIL_PAGE_SIZE = 120;
   const authChannel = "BroadcastChannel" in window ? new BroadcastChannel("spotify-charts-auth") : null;
   let trackedEntities = [];
 
@@ -382,7 +389,7 @@
         requestJson("/api/tracking/configs"),
         requestJson("/api/selections"),
         requestJson("/api/countries"),
-        requestJson("/api/collection/runs?limit=8"),
+        requestJson(`/api/collection/runs?limit=8&offset=${collectionRunsOffset}`),
         requestJson("/api/collection/schedule"),
       ]);
       byId("history-overview-grid").innerHTML = [
@@ -396,6 +403,12 @@
         ? selections.map((entity) => `<option value="${escapeHtml(entity.entityUri)}" data-type="${escapeHtml(entity.entityType)}">${escapeHtml(entity.entityName)} · ${escapeHtml(entity.entityType)}</option>`).join("")
         : '<option value="">Save an entity first</option>';
       byId("tracking-country").innerHTML = countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+      byId("history-detail-country").innerHTML = '<option value="">All markets</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+      byId("history-detail-chart").innerHTML = '<option value="">All charts</option>' + [
+        ["daily_top_songs", "Daily top songs"], ["weekly_top_songs", "Weekly top songs"],
+        ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"],
+        ["weekly_top_albums", "Weekly top albums"],
+      ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
       const setChartOptions = () => {
         const selected = entitySelect.selectedOptions[0];
         const type = selected?.dataset.type;
@@ -412,14 +425,118 @@
           <div class="history-config-copy"><strong>${escapeHtml(config.entity_name)} · ${escapeHtml(config.chart_type.replaceAll("_", " "))}</strong><span>${escapeHtml(config.country_code)} · ${config.backfill_start_date ? `from ${escapeHtml(config.backfill_start_date)}` : "start date not set"} · ${config.enabled ? "Active" : "Paused"}</span></div>
           <button class="quiet-button" type="button" data-toggle-config="${escapeHtml(config.entity_uri)}" data-config-chart="${escapeHtml(config.chart_type)}" data-config-country="${escapeHtml(config.country_code)}" data-config-enabled="${String(config.enabled)}">${config.enabled ? "Pause" : "Resume"}</button>
         </div>`).join("") : '<p class="history-empty-row">No chart tracking configured yet.</p>';
-      byId("collection-runs-list").innerHTML = runs.items.length ? runs.items.map((run) => `<div class="history-run-row"><span>Run #${run.id} · ${escapeHtml(run.source)} · ${escapeHtml(run.status)}</span><span>${Number(run.completed_chart_keys || 0)} / ${Number(run.requested_chart_keys || 0)} chart dates · ${run.created_at ? escapeHtml(new Date(run.created_at).toLocaleString()) : ""}</span></div>`).join("") : '<p class="history-empty-row">No collection runs recorded.</p>';
+      byId("collection-runs-list").innerHTML = runs.items.length ? runs.items.map((run) => `<div class="history-run-row"><span>Run #${run.id} · ${escapeHtml(run.source)} · ${escapeHtml(run.status)}${run.summary_error ? `<small class="history-run-error">${escapeHtml(run.summary_error)}</small>` : ""}</span><span>${Number(run.completed_chart_keys || 0)} / ${Number(run.requested_chart_keys || 0)} completed · ${Number(run.unavailable_chart_keys || 0)} unavailable · ${Number(run.failed_chart_keys || 0)} failed · ${run.created_at ? escapeHtml(new Date(run.created_at).toLocaleString()) : ""}</span></div>`).join("") : '<p class="history-empty-row">No collection runs recorded.</p>';
+      const runsPagination = byId("collection-runs-pagination");
+      runsPagination.hidden = runs.total <= 8;
+      byId("collection-runs-page-label").textContent = runs.total
+        ? `${collectionRunsOffset + 1}–${collectionRunsOffset + runs.items.length} of ${Number(runs.total).toLocaleString()}`
+        : "No collection runs";
+      byId("collection-runs-previous").disabled = collectionRunsOffset === 0;
+      byId("collection-runs-next").disabled = !runs.hasMore;
       const nextRun = schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString() : "Schedule disabled";
       byId("collection-next-run").textContent = nextRun;
       byId("collection-time").value = String(schedule.local_time || "09:00").slice(0, 5);
       byId("collection-timezone").value = schedule.timezone || "Africa/Algiers";
       byId("collection-enabled").checked = Boolean(schedule.enabled);
+      void loadHistoryEntities();
     } catch (error) {
       byId("history-overview-grid").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
+    }
+  }
+
+  async function loadHistoryEntities() {
+    const params = new URLSearchParams({
+      q: byId("history-entity-query").value.trim(),
+      entity_type: byId("history-entity-type").value,
+      sort: byId("history-entity-sort").value,
+      limit: String(HISTORY_ENTITY_PAGE_SIZE),
+      offset: String(historyEntitiesOffset),
+    });
+    try {
+      const payload = await requestJson(`/api/history/entities?${params}`);
+      byId("tracked-entities-count").textContent = `${Number(payload.total).toLocaleString()} tracked entities`;
+      byId("history-entities-list").innerHTML = payload.items.length ? payload.items.map((entity) => `
+        <div class="history-config-row">
+          <div class="history-config-copy"><strong>${escapeHtml(entity.entity_name)} · ${escapeHtml(entity.entity_type)}</strong><span>${Number(entity.appearance_count).toLocaleString()} saved appearances · ${entity.latest_appearance ? `latest ${escapeHtml(entity.latest_appearance)}` : "no saved appearances"} · ${Number(entity.active_configs).toLocaleString()} active configs</span></div>
+          <button class="quiet-button" type="button" data-history-entity="${escapeHtml(entity.entity_uri)}">View detail</button>
+        </div>`).join("") : '<p class="history-empty-row">No tracked entities match these filters.</p>';
+      const pagination = byId("history-entities-pagination");
+      pagination.hidden = payload.total <= HISTORY_ENTITY_PAGE_SIZE;
+      byId("history-entities-page-label").textContent = payload.total
+        ? `${historyEntitiesOffset + 1}–${historyEntitiesOffset + payload.items.length} of ${Number(payload.total).toLocaleString()}`
+        : "No tracked entities";
+      byId("history-entities-previous").disabled = historyEntitiesOffset === 0;
+      byId("history-entities-next").disabled = !payload.hasMore;
+    } catch (error) {
+      byId("tracked-entities-count").textContent = "Tracked history unavailable";
+      byId("history-entities-list").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
+    }
+  }
+
+  async function loadHistoryEntityDetail(entityUri = selectedHistoryEntityUri) {
+    if (!entityUri) return;
+    selectedHistoryEntityUri = entityUri;
+    const params = new URLSearchParams({
+      entity_uri: entityUri,
+      limit: String(HISTORY_ENTITY_DETAIL_PAGE_SIZE),
+      offset: String(historyEntityDetailOffset),
+    });
+    const country = byId("history-detail-country").value;
+    const chartType = byId("history-detail-chart").value;
+    const dateFrom = byId("history-detail-from").value;
+    const dateTo = byId("history-detail-to").value;
+    if (country) params.set("country", country);
+    if (chartType) params.set("chart_type", chartType);
+    if (dateFrom) params.set("date_from", dateFrom);
+    if (dateTo) params.set("date_to", dateTo);
+
+    try {
+      const payload = await requestJson(`/api/history/entity?${params}`);
+      const entity = payload.entity;
+      const summary = payload.summary;
+      byId("history-entity-detail").hidden = false;
+      byId("history-entity-detail-title").textContent = `${entity.entity_name} history`;
+      byId("history-entity-summary").textContent = `${Number(summary.appearances).toLocaleString()} appearances · peak #${summary.peak_rank ?? "—"} · ${summary.first_appearance || "—"} to ${summary.latest_appearance || "—"}${entity.is_archived ? " · archived" : ""}`;
+      const items = [...payload.items].reverse();
+      const labels = [...new Set(items.map((item) => item.chart_date))].sort();
+      const series = [...new Set(items.map((item) => `${item.country_code} · ${item.chart_type.replaceAll("_", " ")}`))];
+      const metric = byId("history-detail-metric").value;
+      const valueFor = (item) => metric === "rank" ? item.chart_rank : item.stream_count;
+      const hasValues = items.some((item) => valueFor(item) != null);
+      const canvas = byId("tracked-entity-chart");
+      const empty = byId("tracked-entity-chart-empty");
+      if (trackedEntityChart) {
+        trackedEntityChart.destroy();
+        trackedEntityChart = null;
+      }
+      canvas.hidden = !hasValues;
+      empty.hidden = hasValues;
+      empty.textContent = items.length ? "No stored values are available for the selected metric." : "No saved chart history matches these filters.";
+      canvas.setAttribute("aria-label", `${metric === "rank" ? "Rank" : "Streams"} history for ${entity.entity_name}`);
+      if (hasValues && window.Chart) {
+        const colors = ["#187a45", "#3478c5", "#e37b26", "#8b5cc7", "#ca4f69", "#148b99"];
+        const datasets = series.map((label, index) => {
+          const matching = items.filter((item) => `${item.country_code} · ${item.chart_type.replaceAll("_", " ")}` === label);
+          const values = new Map(matching.map((item) => [item.chart_date, valueFor(item)]));
+          return { label, data: labels.map((day) => values.get(day) ?? null), borderColor: colors[index % colors.length], backgroundColor: colors[index % colors.length] + "20", borderWidth: 2, pointRadius: labels.length > 40 ? 0 : 2, tension: 0.2, spanGaps: false };
+        });
+        trackedEntityChart = new window.Chart(canvas.getContext("2d"), {
+          type: "line",
+          data: { labels, datasets },
+          options: { responsive: true, maintainAspectRatio: false, interaction: { intersect: false, mode: "index" }, plugins: { legend: { display: series.length > 1, position: "bottom" } }, scales: { y: { reverse: metric === "rank", beginAtZero: metric !== "rank" }, x: { ticks: { maxTicksLimit: 8 } } } },
+        });
+      }
+      byId("history-entity-points").innerHTML = payload.items.length ? payload.items.map((item) => `<div class="history-entity-point"><strong>${escapeHtml(item.chart_date)}</strong><span>${escapeHtml(item.country_code)}</span><span>${escapeHtml(item.chart_type.replaceAll("_", " "))}</span><span>#${escapeHtml(item.chart_rank ?? "—")} · ${item.stream_count == null ? "—" : Number(item.stream_count).toLocaleString()} streams</span></div>`).join("") : '<p class="history-empty-row">No saved chart history matches these filters.</p>';
+      const pagination = byId("history-entity-detail-pagination");
+      pagination.hidden = payload.total <= HISTORY_ENTITY_DETAIL_PAGE_SIZE;
+      byId("history-entity-detail-page-label").textContent = payload.total
+        ? `${historyEntityDetailOffset + 1}–${historyEntityDetailOffset + payload.items.length} of ${Number(payload.total).toLocaleString()}`
+        : "No appearances";
+      byId("history-entity-detail-previous").disabled = historyEntityDetailOffset === 0;
+      byId("history-entity-detail-next").disabled = !payload.hasMore;
+    } catch (error) {
+      byId("history-entity-detail").hidden = false;
+      byId("history-entity-points").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
     }
   }
 
@@ -661,6 +778,47 @@
   byId("history-page-next").addEventListener("click", () => {
     historyOffset += HISTORY_PAGE_SIZE;
     loadFocusedHistory();
+  });
+  byId("history-entity-filter").addEventListener("submit", (event) => {
+    event.preventDefault();
+    historyEntitiesOffset = 0;
+    void loadHistoryEntities();
+  });
+  byId("history-entities-previous").addEventListener("click", () => {
+    historyEntitiesOffset = Math.max(0, historyEntitiesOffset - HISTORY_ENTITY_PAGE_SIZE);
+    void loadHistoryEntities();
+  });
+  byId("history-entities-next").addEventListener("click", () => {
+    historyEntitiesOffset += HISTORY_ENTITY_PAGE_SIZE;
+    void loadHistoryEntities();
+  });
+  byId("history-entities-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-history-entity]");
+    if (!button) return;
+    historyEntityDetailOffset = 0;
+    void loadHistoryEntityDetail(button.dataset.historyEntity);
+  });
+  ["history-detail-country", "history-detail-chart", "history-detail-from", "history-detail-to", "history-detail-metric"].forEach((id) => {
+    byId(id).addEventListener("change", () => {
+      historyEntityDetailOffset = 0;
+      void loadHistoryEntityDetail();
+    });
+  });
+  byId("collection-runs-previous").addEventListener("click", () => {
+    collectionRunsOffset = Math.max(0, collectionRunsOffset - 8);
+    void loadHistoryManagement();
+  });
+  byId("collection-runs-next").addEventListener("click", () => {
+    collectionRunsOffset += 8;
+    void loadHistoryManagement();
+  });
+  byId("history-entity-detail-previous").addEventListener("click", () => {
+    historyEntityDetailOffset = Math.max(0, historyEntityDetailOffset - HISTORY_ENTITY_DETAIL_PAGE_SIZE);
+    void loadHistoryEntityDetail();
+  });
+  byId("history-entity-detail-next").addEventListener("click", () => {
+    historyEntityDetailOffset += HISTORY_ENTITY_DETAIL_PAGE_SIZE;
+    void loadHistoryEntityDetail();
   });
   byId("tracking-config-form").addEventListener("submit", async (event) => {
     event.preventDefault();
