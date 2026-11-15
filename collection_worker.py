@@ -11,7 +11,7 @@ import httpx
 from fastapi import HTTPException
 
 from chart_history import CHART_STEPS, parse_chart_date, save_chart_snapshot
-from spotify_charts import SpotifyCharts
+from spotify_charts import SpotifyCharts, parse_retry_after_delay
 
 MAX_CHART_KEYS_PER_TICK = 8
 COLLECTION_LEASE = timedelta(minutes=15)
@@ -74,17 +74,21 @@ async def _retry_claimed_job(
     owner: str,
     message: str,
     http_status: int | None,
+    retry_after_seconds: float | None = None,
 ) -> None:
     if requested_date is None:
         return
     await pool.execute(
         """UPDATE public.spotify_chart_refresh_jobs SET status = 'retry',
-             next_attempt_at = now() + LEAST(3600, 30 * power(2, LEAST(attempt_count - 1, 7))) * interval '1 second',
+             next_attempt_at = now() + LEAST(3600, GREATEST(
+               0, COALESCE($7::double precision,
+                 30 * power(2, LEAST(attempt_count - 1, 7)))
+             )) * interval '1 second',
              last_error = $5, last_http_status = $6, lease_owner = NULL,
              lease_expires_at = NULL, completed_at = NULL, updated_at = now()
            WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3
              AND lease_owner = $4 AND status = 'running'""",
-        chart_type, country, requested_date, owner, message, http_status,
+        chart_type, country, requested_date, owner, message, http_status, retry_after_seconds,
     )
 
 
@@ -173,6 +177,8 @@ async def _process_pending_history_jobs(
             await _retry_claimed_job(
                 pool, chart_type, country, requested_date, owner, message,
                 error.response.status_code if isinstance(error, httpx.HTTPStatusError) else None,
+                parse_retry_after_delay(error.response.headers.get("Retry-After"))
+                if isinstance(error, httpx.HTTPStatusError) else None,
             )
             errors.append(f"{chart_type}/{country}/{requested_date}: {type(error).__name__}")
     return completed, failed, errors
@@ -306,7 +312,10 @@ async def run_collection_tick(
             http_status = error.response.status_code
             failed += 1
             message = f"Spotify returned HTTP {http_status}; no date was classified unavailable."
-            await _retry_claimed_job(pool, chart_type, country, requested_date, owner, message, http_status)
+            await _retry_claimed_job(
+                pool, chart_type, country, requested_date, owner, message, http_status,
+                parse_retry_after_delay(error.response.headers.get("Retry-After")),
+            )
             error_messages.append(f"{chart_type}/{country}: HTTP {http_status}; date not classified unavailable")
         except Exception as error:
             failed += 1
