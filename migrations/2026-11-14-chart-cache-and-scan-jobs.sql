@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS public.spotify_chart_refresh_jobs (
 CREATE TABLE IF NOT EXISTS public.spotify_focused_scan_jobs (
     cadence text NOT NULL CHECK (cadence = ANY (ARRAY['daily','weekly'])),
     entity_type text NOT NULL CHECK (entity_type = ANY (ARRAY['track','artist','album'])),
-    status text NOT NULL DEFAULT 'pending' CHECK (status = ANY (ARRAY['pending','running','complete','failed'])),
+    status text NOT NULL DEFAULT 'pending' CHECK (status = ANY (ARRAY['pending','running','complete','partial','failed'])),
     completed_markets text[] NOT NULL DEFAULT ARRAY[]::text[],
     failed_markets jsonb NOT NULL DEFAULT '[]'::jsonb,
     partial_payload jsonb NOT NULL DEFAULT '{}'::jsonb,

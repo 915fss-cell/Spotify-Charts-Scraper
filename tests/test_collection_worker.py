@@ -365,6 +365,26 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(connection.rows[0][9])
         self.assertIsNotNone(snapshot_values(entry))
 
+    async def test_snapshot_matches_selected_artist_by_artist_uri(self):
+        connection = RecordingConnection()
+        entry = {
+            "trackMetadata": {
+                "trackUri": "spotify:track:0123456789abcdef",
+                "trackName": "Artist song",
+                "artists": [{"spotifyUri": "spotify:artist:0123456789abcdef", "name": "Artist"}],
+            },
+            "chartEntryData": {"currentRank": 4},
+        }
+
+        count = await save_chart_snapshot(
+            None, "daily_top_songs", "US", date(2026, 11, 14), [entry],
+            allowed_entity_uris=set(), connection=connection,
+            allowed_artist_uris={"spotify:artist:0123456789abcdef"},
+        )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(connection.rows[0][3], "spotify:track:0123456789abcdef")
+
     async def test_snapshot_conflicts_never_overwrite_saved_history(self):
         connection = RecordingConnection()
         entry = {

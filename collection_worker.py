@@ -160,6 +160,7 @@ async def _process_pending_history_jobs(
                     await save_chart_snapshot(
                         pool, chart_type, country, response_date, entries,
                         allowed_entity_uris=set(entity_uris), connection=connection,
+                        allowed_artist_uris={uri for uri in entity_uris if uri.startswith("spotify:artist:")},
                     )
                     await connection.execute(
                         """UPDATE public.spotify_chart_refresh_jobs SET status = 'succeeded',
@@ -221,11 +222,23 @@ async def run_collection_tick(
     failed += history_failed
     error_messages.extend(history_errors)
     config_rows = await pool.fetch(
-        """SELECT chart_type, country_code, array_agg(entity_uri ORDER BY entity_uri) AS entity_uris
-           FROM public.spotify_chart_tracking_configs
-           WHERE enabled = true AND chart_type = ANY($1::text[])
-           GROUP BY chart_type, country_code
-           ORDER BY chart_type, country_code
+        """SELECT c.chart_type, c.country_code, array_agg(c.entity_uri ORDER BY c.entity_uri) AS entity_uris
+           FROM public.spotify_chart_tracking_configs c
+           WHERE c.enabled = true AND c.chart_type = ANY($1::text[])
+             AND NOT EXISTS (
+               SELECT 1 FROM public.spotify_chart_refresh_jobs j
+               WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code
+                 AND j.status IN ('succeeded', 'complete') AND j.fetched_at::date = CURRENT_DATE
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM public.spotify_chart_refresh_jobs j
+               WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code
+                 AND j.status = 'retry' AND j.next_attempt_at > now()
+             )
+           GROUP BY c.chart_type, c.country_code
+           ORDER BY (SELECT max(j.fetched_at) FROM public.spotify_chart_refresh_jobs j
+                     WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code),
+                    c.chart_type, c.country_code
            LIMIT $2""",
         list(CHART_STEPS),
         max(0, max_chart_keys - history_completed - history_failed),
@@ -298,6 +311,7 @@ async def run_collection_tick(
                         entries,
                         allowed_entity_uris=entity_uris,
                         connection=connection,
+                        allowed_artist_uris={uri for uri in entity_uris if uri.startswith("spotify:artist:")},
                     )
                     await connection.execute(
                         """UPDATE public.spotify_chart_refresh_jobs SET status = 'succeeded',

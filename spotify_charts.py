@@ -20,7 +20,8 @@ redirect_port = spotify_settings.redirect_port
 
 redirect_url = f"{redirect_uri}:{redirect_port}"
 CHART_CACHE_TTL = 300
-CHART_REQUEST_INTERVAL = 2.0
+CHART_REQUEST_INTERVAL = 3.0
+CHART_RATE_LIMIT_DEFAULT_COOLDOWN = 30.0
 CHART_RATE_LIMIT_MAX_COOLDOWN = 120.0
 _chart_cache: dict[str, tuple[float, dict]] = {}
 _chart_inflight: dict[str, asyncio.Task] = {}
@@ -112,6 +113,7 @@ def get_refresh_token(server_class=HTTPServer, handler_class=AuthRequestHandler)
 
 class SpotifyCharts:
     def __init__(self, access_token: str | None = None) -> None:
+        self._request_diagnostics: dict[str, dict] = {}
         if access_token:
             self.headers = {"Authorization": f"Bearer {access_token}"}
             return
@@ -161,28 +163,83 @@ class SpotifyCharts:
                     if _chart_inflight.get(url) is task:
                         _chart_inflight.pop(url, None)
 
+    def get_chart_diagnostics(self, chart_type: str, country_code: str, date_: str) -> dict:
+        country = country_code.lower()
+        paths = {
+            "daily_top_songs": f"regional-{country}-daily",
+            "daily_viral_songs": f"viral-{country}-daily",
+            "weekly_top_songs": f"regional-{country}-weekly",
+            "daily_top_artists": f"artist-{country}-daily",
+            "weekly_top_artists": f"artist-{country}-weekly",
+            "weekly_top_albums": f"album-{country}-weekly",
+        }
+        chart_path = paths.get(chart_type)
+        url = f"https://charts-spotify-com-service.spotify.com/auth/v0/charts/{chart_path}/{date_}" if chart_path else ""
+        return deepcopy(self._request_diagnostics.get(url, {
+            "attemptCount": 0, "httpStatus": None, "retryAfterSeconds": None,
+            "retryDelaySeconds": None, "timeout": False, "rateLimited": False, "errorResponse": None,
+        }))
+
     async def _fetch_chart_uncached(self, url: str) -> dict:
+        started_at = monotonic()
+        diagnostic = {
+            "attemptCount": 0, "httpStatus": None, "retryAfterSeconds": None,
+            "retryDelaySeconds": None, "timeout": False, "rateLimited": False, "errorResponse": None,
+        }
+        self._request_diagnostics[url] = diagnostic
+        retryable_statuses = {429, 500, 502, 503, 504}
         async with AsyncClient(timeout=15) as client:
             for attempt in range(3):
+                diagnostic["attemptCount"] = attempt + 1
                 await _wait_for_chart_request_slot()
-                response = await client.get(url, headers=self.headers)
-                if response.status_code not in {429, 500, 502, 503, 504}:
+                try:
+                    response = await client.get(url, headers=self.headers)
+                except httpx.TimeoutException as error:
+                    diagnostic["timeout"] = True
+                    diagnostic["error"] = type(error).__name__
+                    if attempt == 2:
+                        diagnostic["elapsedMs"] = round((monotonic() - started_at) * 1000)
+                        raise
+                    await asyncio.sleep(0.5 * (2**attempt))
+                    continue
+                except httpx.RequestError as error:
+                    diagnostic["error"] = type(error).__name__
+                    if attempt == 2:
+                        diagnostic["elapsedMs"] = round((monotonic() - started_at) * 1000)
+                        raise
+                    await asyncio.sleep(0.5 * (2**attempt))
+                    continue
+
+                diagnostic["httpStatus"] = response.status_code
+                if response.status_code not in retryable_statuses:
+                    diagnostic["errorResponse"] = response.text[:500] if response.is_error else None
                     response.raise_for_status()
                     payload = response.json()
                     break
 
+                diagnostic["rateLimited"] = diagnostic["rateLimited"] or response.status_code == 429
                 retry_after_delay = parse_retry_after_delay(response.headers.get("Retry-After"))
-                delay = max(retry_after_delay, 0.25) if retry_after_delay is not None else 0.5 * (2**attempt)
-                delay = min(delay, CHART_RATE_LIMIT_MAX_COOLDOWN)
-
+                diagnostic["retryAfterSeconds"] = retry_after_delay
+                if retry_after_delay is not None:
+                    delay = retry_after_delay
+                elif response.status_code == 429:
+                    delay = min(CHART_RATE_LIMIT_DEFAULT_COOLDOWN * (2**attempt), CHART_RATE_LIMIT_MAX_COOLDOWN)
+                else:
+                    delay = min(0.5 * (2**attempt), CHART_RATE_LIMIT_MAX_COOLDOWN)
+                diagnostic["retryDelaySeconds"] = delay
+                diagnostic["errorResponse"] = response.text[:500]
                 if response.status_code == 429:
                     await _defer_chart_requests(delay)
                 if attempt == 2:
                     response.raise_for_status()
                 await asyncio.sleep(delay)
         if not isinstance(payload, dict):
+            diagnostic["error"] = "InvalidChartPayload"
+            diagnostic["elapsedMs"] = round((monotonic() - started_at) * 1000)
             raise ValueError("Spotify returned an unexpected chart response.")
 
+        diagnostic["error"] = None
+        diagnostic["elapsedMs"] = round((monotonic() - started_at) * 1000)
         now = monotonic()
         _chart_cache[url] = (now + CHART_CACHE_TTL, deepcopy(payload))
         for cached_url, (expires_at, _) in list(_chart_cache.items()):
