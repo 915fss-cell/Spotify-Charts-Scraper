@@ -184,6 +184,15 @@ class CollectionScheduleInput(BaseModel):
     timezone: str = Field(min_length=1, max_length=80)
 
 
+class ChartJobRetryInput(BaseModel):
+    chart_type: Literal[
+        "daily_top_songs", "weekly_top_songs", "daily_top_artists",
+        "weekly_top_artists", "weekly_top_albums",
+    ]
+    country_code: str = Field(min_length=2, max_length=6)
+    requested_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
 CHART_METHODS = {
     "daily_top_songs": "daily_top_songs",
     "daily_top_artists": "daily_top_artists",
@@ -669,6 +678,101 @@ async def collection_runs(
         "total": total,
         "hasMore": offset + len(rows) < total,
     }
+
+
+@app.get("/api/collection/jobs")
+async def collection_jobs(
+    status: Literal["all", "pending", "running", "succeeded", "complete", "unavailable", "retry", "failed"] = Query("all"),
+    chart_type: str | None = Query(None),
+    country: str | None = Query(None, min_length=2, max_length=6),
+    date_from: calendar_date | None = Query(None),
+    date_to: calendar_date | None = Query(None),
+    entity_uri: str | None = Query(None, min_length=16, max_length=128),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0, le=100000),
+) -> dict[str, Any]:
+    require_spotify_connection()
+    if chart_type is not None and chart_type not in HISTORY_CHART_TYPES:
+        raise HTTPException(status_code=400, detail="Choose a supported chart type.")
+    if country is not None:
+        country = country.upper()
+        if country not in {item.value for item in Countries}:
+            raise HTTPException(status_code=400, detail="Choose a country from the list.")
+    if entity_uri is not None and not is_valid_entity_uri(entity_uri):
+        raise HTTPException(status_code=400, detail="Choose a valid Spotify entity.")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=400, detail="The start date must be before the end date.")
+
+    pool = await get_history_pool()
+    predicate = """($1 = 'all' OR j.status = $1)
+      AND ($2::text IS NULL OR j.chart_type = $2)
+      AND ($3::text IS NULL OR j.country_code = $3)
+      AND ($4::date IS NULL OR j.requested_date >= ($4::date)::text)
+      AND ($5::date IS NULL OR j.requested_date <= ($5::date)::text)
+      AND ($6::text IS NULL OR EXISTS (
+        SELECT 1 FROM public.spotify_chart_tracking_configs c
+        WHERE c.chart_type = j.chart_type AND c.country_code = j.country_code
+          AND c.entity_uri = $6
+      ))"""
+    total = int(await pool.fetchval(
+        f"SELECT count(*) FROM public.spotify_chart_refresh_jobs j WHERE {predicate}",
+        status, chart_type, country, date_from, date_to, entity_uri,
+    ) or 0)
+    rows = await pool.fetch(
+        f"""SELECT j.chart_type, j.country_code, j.requested_date,
+                   COALESCE(j.chart_date::text, CASE WHEN j.requested_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN j.requested_date END) AS chart_date,
+                   j.status, j.attempt_count, j.next_attempt_at, j.last_error,
+                   j.last_http_status, j.updated_at
+            FROM public.spotify_chart_refresh_jobs j WHERE {predicate}
+            ORDER BY j.updated_at DESC, j.chart_type, j.country_code, j.requested_date
+            LIMIT $7 OFFSET $8""",
+        status, chart_type, country, date_from, date_to, entity_uri, limit, offset,
+    )
+    items = []
+    for row in rows:
+        item = dict(row)
+        for field in ("chart_date", "next_attempt_at", "updated_at"):
+            if item.get(field) is not None:
+                item[field] = item[field].isoformat()
+        items.append(item)
+    return {"items": items, "total": total, "limit": limit, "offset": offset, "hasMore": offset + len(items) < total}
+
+
+@app.post("/api/collection/jobs/retry")
+async def retry_collection_job(retry: ChartJobRetryInput) -> dict[str, Any]:
+    require_spotify_connection()
+    country = retry.country_code.upper()
+    if country not in {item.value for item in Countries}:
+        raise HTTPException(status_code=400, detail="Choose a country from the list.")
+    try:
+        requested_date = calendar_date.fromisoformat(retry.requested_date)
+        if requested_date.isoformat() != retry.requested_date:
+            raise ValueError
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Date must be a valid YYYY-MM-DD date.") from error
+
+    pool = await get_history_pool()
+    row = await pool.fetchrow(
+        """UPDATE public.spotify_chart_refresh_jobs
+           SET status = 'pending', next_attempt_at = now(), lease_owner = NULL,
+               lease_expires_at = NULL, completed_at = NULL, last_error = NULL,
+               updated_at = now()
+           WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3
+             AND status IN ('retry', 'failed', 'unavailable')
+           RETURNING chart_type, country_code, requested_date, status""",
+        retry.chart_type, country, requested_date.isoformat(),
+    )
+    if row is None:
+        existing = await pool.fetchval(
+            """SELECT status FROM public.spotify_chart_refresh_jobs
+               WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3""",
+            retry.chart_type, country, requested_date.isoformat(),
+        )
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Chart date job was not found.")
+        raise HTTPException(status_code=409, detail=f"This chart date cannot be retried while its status is {existing}.")
+    return {"chart_type": row["chart_type"], "country_code": row["country_code"],
+            "requested_date": row["requested_date"], "status": row["status"]}
 
 
 @app.get("/api/collection/schedule")

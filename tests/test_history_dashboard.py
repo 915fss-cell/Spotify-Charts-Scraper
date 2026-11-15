@@ -104,6 +104,52 @@ class HistoryDashboardTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_collection_jobs_are_filtered_and_paginated(self):
+        async def run():
+            pool = HistoryPoolStub()
+            pool.fetchval_result = 12
+            pool.fetch_rows = [{
+                "chart_type": "daily_top_songs",
+                "country_code": "GLOBAL",
+                "requested_date": "2026-11-14",
+                "chart_date": date(2026, 11, 14),
+                "status": "retry",
+                "attempt_count": 2,
+                "next_attempt_at": None,
+                "last_error": "timeout",
+                "last_http_status": None,
+                "updated_at": None,
+            }]
+            with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                app, "require_spotify_connection"
+            ):
+                result = await app.collection_jobs("retry", "daily_top_songs", "global", None, None, None, 10, 10)
+            self.assertEqual(result["total"], 12)
+            self.assertTrue(result["hasMore"])
+            self.assertEqual(result["items"][0]["chart_date"], "2026-11-14")
+
+        asyncio.run(run())
+
+    def test_retry_requeues_retryable_or_unavailable_job(self):
+        async def run():
+            pool = HistoryPoolStub()
+            pool.fetchrow = AsyncMock(return_value={
+                "chart_type": "daily_top_songs",
+                "country_code": "GLOBAL",
+                "requested_date": "2026-11-14",
+                "status": "pending",
+            })
+            with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                app, "require_spotify_connection"
+            ):
+                result = await app.retry_collection_job(app.ChartJobRetryInput(
+                    chart_type="daily_top_songs", country_code="global", requested_date="2026-11-14"
+                ))
+            self.assertEqual(result["status"], "pending")
+            self.assertEqual(result["country_code"], "GLOBAL")
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()
