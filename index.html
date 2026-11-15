@@ -126,6 +126,8 @@
             <div class="field"><label for="tracking-start-date">Backfill from</label><input id="tracking-start-date" type="date" /></div>
             <button class="load-button" type="submit">Save tracking</button>
           </form>
+          <div class="chart-head"><span class="chart-title">Historical backfill queue</span><div class="focus-header-actions"><button class="quiet-button" id="backfill-run-all" type="button">Run all pending backfills</button><button class="quiet-button" id="backfill-pause" type="button" hidden>Pause after this batch</button></div></div>
+          <p class="page-status" id="backfill-runner-status" role="status" aria-live="polite">Backfill runs are manual and can be resumed from saved progress.</p>
           <div class="history-config-list" id="tracking-config-list" aria-live="polite"></div>
           <form class="filters history-schedule-form" id="collection-schedule-form">
             <div class="field"><label for="collection-time">Daily collection time</label><input id="collection-time" type="time" value="09:00" required /></div>

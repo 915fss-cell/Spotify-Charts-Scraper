@@ -19,6 +19,9 @@
   let historyEntityDetailOffset = 0;
   let collectionRunsOffset = 0;
   let collectionJobsOffset = 0;
+  let backfillRunnerActive = false;
+  let backfillRunnerTimer = null;
+  let backfillRunnerWaiter = null;
   let selectedHistoryEntityUri = "";
   let trackedEntityChart = null;
   const HISTORY_PAGE_SIZE = 50;
@@ -363,14 +366,19 @@
 
   async function loadHistoryManagement() {
     try {
-      const [overview, configs, selections, countries, runs, schedule] = await Promise.all([
+      const [overview, configs, selections, countries, runs, schedule, backfillQueue] = await Promise.all([
         requestJson("/api/history/overview"),
         requestJson("/api/tracking/configs"),
         requestJson("/api/selections"),
         requestJson("/api/countries"),
         requestJson(`/api/collection/runs?limit=8&offset=${collectionRunsOffset}`),
         requestJson("/api/collection/schedule"),
+        requestJson("/api/chart-history/backfill/queue"),
       ]);
+      if (!backfillRunnerActive) {
+        const remaining = Number(backfillQueue.remainingDates || 0).toLocaleString();
+        setStatus("backfill-runner-status", `${remaining} historical chart dates remaining across ${Number(backfillQueue.activeJobs || 0).toLocaleString()} active jobs. Progress is saved after each date.`);
+      }
       byId("history-overview-grid").innerHTML = [
         [overview.tracked_entities, "Tracked entities"],
         [overview.active_configs, "Active chart configs"],
@@ -917,6 +925,77 @@
     } finally {
       button.disabled = false;
     }
+  });
+  async function waitForBackfillRetry(seconds) {
+    let remaining = Math.max(1, Math.ceil(Number(seconds) || 30));
+    return new Promise((resolve) => {
+      const finish = () => {
+        if (backfillRunnerTimer) window.clearInterval(backfillRunnerTimer);
+        backfillRunnerTimer = null;
+        backfillRunnerWaiter = null;
+        resolve();
+      };
+      backfillRunnerWaiter = finish;
+      setStatus("backfill-runner-status", `A date is waiting for retry. Resuming in ${remaining.toLocaleString()} seconds; saved progress is safe.`);
+      backfillRunnerTimer = window.setInterval(() => {
+        if (!backfillRunnerActive) return finish();
+        remaining -= 1;
+        if (remaining <= 0) return finish();
+        setStatus("backfill-runner-status", `A date is waiting for retry. Resuming in ${remaining.toLocaleString()} seconds; saved progress is safe.`);
+      }, 1000);
+    });
+  }
+
+  byId("backfill-run-all").addEventListener("click", async () => {
+    if (backfillRunnerActive) return;
+    const runButton = byId("backfill-run-all");
+    const pauseButton = byId("backfill-pause");
+    let finalMessage = "Backfill paused. Saved progress can be resumed later.";
+    try {
+      const queue = await requestJson("/api/chart-history/backfill/queue");
+      const remaining = Number(queue.remainingDates || 0);
+      if (!remaining) {
+        setStatus("backfill-runner-status", "There are no pending historical chart dates.");
+        return;
+      }
+      if (!window.confirm(`Run the pending backfill for up to ${remaining.toLocaleString()} chart dates? Requests are paced and progress is saved after every date. You can pause and resume later.`)) return;
+      backfillRunnerActive = true;
+      runButton.disabled = true;
+      pauseButton.hidden = false;
+      finalMessage = "Backfill paused. Saved progress can be resumed later.";
+      while (backfillRunnerActive) {
+        const result = await requestJson("/api/chart-history/backfill/queue/step", { method: "POST" });
+        const remainingDates = Number(result.queue?.remainingDates || 0);
+        if (result.state === "complete") {
+          finalMessage = "Historical backfill queue complete.";
+          break;
+        }
+        if (result.state === "waiting") {
+          await waitForBackfillRetry(result.retryAfterSeconds);
+          continue;
+        }
+        const batch = result.batch || {};
+        setStatus("backfill-runner-status", `${Number(batch.processedDates || 0).toLocaleString()} of ${Number(batch.totalDates || 0).toLocaleString()} dates processed for ${batch.chartType || "current chart"} / ${batch.country || "current market"}; ${remainingDates.toLocaleString()} remain across the queue.`);
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      }
+    } catch (error) {
+      finalMessage = `Backfill stopped: ${error.message}. Saved progress is safe to resume.`;
+    } finally {
+      backfillRunnerActive = false;
+      if (backfillRunnerTimer) window.clearInterval(backfillRunnerTimer);
+      backfillRunnerTimer = null;
+      if (backfillRunnerWaiter) backfillRunnerWaiter();
+      backfillRunnerWaiter = null;
+      runButton.disabled = false;
+      pauseButton.hidden = true;
+      await loadHistoryManagement();
+      setStatus("backfill-runner-status", finalMessage);
+    }
+  });
+  byId("backfill-pause").addEventListener("click", () => {
+    backfillRunnerActive = false;
+    setStatus("backfill-runner-status", "Pause requested. The current bounded batch will finish before the runner stops.");
+    if (backfillRunnerWaiter) backfillRunnerWaiter();
   });
   byId("collection-schedule-form").addEventListener("submit", async (event) => {
     event.preventDefault();
