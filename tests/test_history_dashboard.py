@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import app
@@ -147,6 +148,95 @@ class HistoryDashboardTests(unittest.TestCase):
                 ))
             self.assertEqual(result["status"], "pending")
             self.assertEqual(result["country_code"], "GLOBAL")
+
+        asyncio.run(run())
+
+    def test_manual_collection_delegates_to_shared_worker(self):
+        async def run():
+            pool = HistoryPoolStub()
+            worker = AsyncMock(return_value={"id": 7, "source": "manual", "status": "succeeded"})
+            with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                app, "require_spotify_connection"
+            ), patch.object(app, "run_collection_tick", new=worker):
+                result = await app.start_manual_collection()
+            self.assertEqual(result["id"], 7)
+            worker.assert_awaited_once_with(pool, app.get_spotify_scraper, source="manual")
+
+        asyncio.run(run())
+
+    def test_schedule_update_persists_disabled_schedule_without_next_run(self):
+        async def run():
+            pool = HistoryPoolStub()
+            pool.fetchrow = AsyncMock(return_value={
+                "enabled": False,
+                "local_time": "08:30:00",
+                "timezone": "UTC",
+                "next_run_at": None,
+            })
+            with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                app, "require_spotify_connection"
+            ):
+                result = await app.update_collection_schedule(app.CollectionScheduleInput(
+                    enabled=False, local_time="08:30", timezone="UTC"
+                ))
+            self.assertFalse(result["enabled"])
+            self.assertIsNone(result["next_run_at"])
+            self.assertEqual(pool.fetchrow.await_args.args[1:], (False, "08:30", "UTC", None))
+
+        asyncio.run(run())
+
+    def test_schedule_update_rejects_unknown_timezone_before_database_access(self):
+        async def run():
+            get_pool = AsyncMock()
+            with patch.object(app, "get_history_pool", new=get_pool), patch.object(
+                app, "require_spotify_connection"
+            ):
+                with self.assertRaises(app.HTTPException) as raised:
+                    await app.update_collection_schedule(app.CollectionScheduleInput(
+                        enabled=True, local_time="09:00", timezone="Not/A_Timezone"
+                    ))
+            self.assertEqual(raised.exception.status_code, 400)
+            get_pool.assert_not_awaited()
+
+        asyncio.run(run())
+
+    def test_scheduled_tick_rejects_invalid_cron_secret(self):
+        async def run():
+            request = SimpleNamespace(headers={"authorization": "Bearer wrong-secret"})
+            with patch.dict(app.os.environ, {"CRON_SECRET": "expected-secret"}):
+                with self.assertRaises(app.HTTPException) as raised:
+                    await app.scheduled_collection_tick(request)
+            self.assertEqual(raised.exception.status_code, 401)
+
+        asyncio.run(run())
+
+    def test_scheduled_tick_uses_shared_worker_after_authentication(self):
+        async def run():
+            pool = HistoryPoolStub()
+            worker = AsyncMock(return_value=None)
+            request = SimpleNamespace(headers={"authorization": "Bearer expected-secret"})
+            with patch.dict(app.os.environ, {"CRON_SECRET": "expected-secret"}), patch.object(
+                app, "get_history_pool", new=AsyncMock(return_value=pool)
+            ), patch.object(app, "run_collection_tick", new=worker):
+                result = await app.scheduled_collection_tick(request)
+            self.assertEqual(result, {"status": "not_due"})
+            worker.assert_awaited_once_with(pool, app.get_spotify_scraper, source="scheduled")
+
+        asyncio.run(run())
+
+    def test_retry_returns_conflict_for_non_retryable_job(self):
+        async def run():
+            pool = HistoryPoolStub()
+            pool.fetchrow = AsyncMock(return_value=None)
+            pool.fetchval = AsyncMock(return_value="succeeded")
+            with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                app, "require_spotify_connection"
+            ):
+                with self.assertRaises(app.HTTPException) as raised:
+                    await app.retry_collection_job(app.ChartJobRetryInput(
+                        chart_type="daily_top_songs", country_code="GLOBAL", requested_date="2026-11-14"
+                    ))
+            self.assertEqual(raised.exception.status_code, 409)
 
         asyncio.run(run())
 

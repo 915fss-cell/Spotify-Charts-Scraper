@@ -22,7 +22,6 @@ from chart_history import (
     close_history_pool,
     entry_entity_uri,
     get_history_pool,
-    prepare_chart_history,
     run_durable_history_backfill_batch,
     snapshot_values,
 )
@@ -74,23 +73,16 @@ async def remove_spotify_refresh_token() -> None:
 
 HISTORY_CHART_TYPES = {
     "daily_top_songs": "track",
+    "daily_viral_songs": "track",
     "weekly_top_songs": "track",
     "daily_top_artists": "artist",
     "weekly_top_artists": "artist",
     "weekly_top_albums": "album",
 }
-FOCUSED_ARTISTS = (
-    {"uri": "spotify:artist:06HL4z0CvFAxyc27GXpf02", "name": "Taylor Swift"},
-    {"uri": "spotify:artist:4UIOuc84ExWojcUzFGtbW8", "name": "Felix"},
-)
-FOCUSED_ARTIST_URIS = [artist["uri"] for artist in FOCUSED_ARTISTS]
-FOCUSED_ARTIST_NAMES = [artist["name"] for artist in FOCUSED_ARTISTS]
-FOCUSED_ARTIST_NAME = "Taylor Swift and Felix"
-FOCUSED_TRACK_URI = "spotify:track:15fpZUMOQD9ONTjxITFXFT"
 FOCUSED_CHART_CACHE_TTL = 180
 CHART_PAYLOAD_TTL_SECONDS = 300
 CHART_REFRESH_LEASE_SECONDS = 120
-focused_chart_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+focused_chart_cache: dict[tuple[str, ...], tuple[float, dict[str, Any]]] = {}
 focused_chart_cache_lock = asyncio.Lock()
 COUNTRY_NAMES = {country.value: country.name.replace("_", " ").title() for country in Countries}
 
@@ -170,7 +162,7 @@ class SelectionInput(BaseModel):
 class TrackingConfigInput(BaseModel):
     entity_uri: str = Field(min_length=16, max_length=128)
     chart_type: Literal[
-        "daily_top_songs", "weekly_top_songs", "daily_top_artists",
+        "daily_top_songs", "daily_viral_songs", "weekly_top_songs", "daily_top_artists",
         "weekly_top_artists", "weekly_top_albums",
     ]
     country_code: str = Field(min_length=2, max_length=6)
@@ -186,7 +178,7 @@ class CollectionScheduleInput(BaseModel):
 
 class ChartJobRetryInput(BaseModel):
     chart_type: Literal[
-        "daily_top_songs", "weekly_top_songs", "daily_top_artists",
+        "daily_top_songs", "daily_viral_songs", "weekly_top_songs", "daily_top_artists",
         "weekly_top_artists", "weekly_top_albums",
     ]
     country_code: str = Field(min_length=2, max_length=6)
@@ -456,31 +448,42 @@ async def save_tracking_config(config: TrackingConfigInput) -> dict[str, Any]:
     if not is_valid_entity_uri(config.entity_uri):
         raise HTTPException(status_code=400, detail="Choose a valid Spotify entity.")
     country = config.country_code.upper()
-    if country not in {item.value for item in Countries}:
+    if country != "ALL" and country not in {item.value for item in Countries}:
         raise HTTPException(status_code=400, detail="Choose a country from the list.")
-    expected_type = HISTORY_CHART_TYPES[config.chart_type]
-    if config.entity_uri.split(":")[1] != expected_type:
-        raise HTTPException(status_code=400, detail="The selected entity type does not match this chart.")
+    countries_to_save = [item.value for item in Countries] if country == "ALL" else [country]
+    selected_type = config.entity_uri.split(":")[1]
+    if config.chart_type in {"daily_top_artists", "weekly_top_artists"}:
+        valid_type = selected_type == "artist"
+    elif config.chart_type == "weekly_top_albums":
+        valid_type = selected_type == "artist"
+    else:
+        valid_type = selected_type in {"artist", "track"}
+    if not valid_type:
+        raise HTTPException(status_code=400, detail="Track charts accept saved songs or artists; artist and album charts accept saved artists.")
     pool = await get_history_pool()
+    saved = []
     async with pool.acquire() as connection:
-        row = await connection.fetchrow(
-            """INSERT INTO public.spotify_chart_tracking_configs
-                 (entity_uri, chart_type, country_code, enabled, backfill_start_date)
-               SELECT $1, $2, $3, $4, $5
-               WHERE EXISTS (SELECT 1 FROM public.spotify_chart_selections
-                             WHERE entity_uri = $1 AND is_archived = false)
-               ON CONFLICT (entity_uri, chart_type, country_code) DO UPDATE SET
-                 enabled = EXCLUDED.enabled,
-                 backfill_start_date = COALESCE(EXCLUDED.backfill_start_date,
-                                                 public.spotify_chart_tracking_configs.backfill_start_date),
-                 updated_at = now()
-               RETURNING entity_uri, chart_type, country_code, enabled, backfill_start_date, updated_at""",
-            config.entity_uri, config.chart_type, country, config.enabled, config.backfill_start_date,
-        )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Save the entity to your tracked list before configuring its charts.")
-    return {**dict(row), "backfill_start_date": row["backfill_start_date"].isoformat() if row["backfill_start_date"] else None,
-            "updated_at": row["updated_at"].isoformat()}
+        async with connection.transaction():
+            for country_code in countries_to_save:
+                row = await connection.fetchrow(
+                    """INSERT INTO public.spotify_chart_tracking_configs
+                         (entity_uri, chart_type, country_code, enabled, backfill_start_date)
+                       SELECT $1, $2, $3, $4, $5
+                       WHERE EXISTS (SELECT 1 FROM public.spotify_chart_selections
+                                     WHERE entity_uri = $1 AND is_archived = false)
+                       ON CONFLICT (entity_uri, chart_type, country_code) DO UPDATE SET
+                         enabled = EXCLUDED.enabled,
+                         backfill_start_date = COALESCE(EXCLUDED.backfill_start_date,
+                                                         public.spotify_chart_tracking_configs.backfill_start_date),
+                         updated_at = now()
+                       RETURNING entity_uri, chart_type, country_code, enabled, backfill_start_date, updated_at""",
+                    config.entity_uri, config.chart_type, country_code, config.enabled, config.backfill_start_date,
+                )
+                if row is None:
+                    raise HTTPException(status_code=404, detail="Save the entity to your tracked list before configuring its charts.")
+                saved.append({**dict(row), "backfill_start_date": row["backfill_start_date"].isoformat() if row["backfill_start_date"] else None,
+                              "updated_at": row["updated_at"].isoformat()})
+    return {"saved": saved, "country_count": len(saved)} if country == "ALL" else saved[0]
 
 
 @app.get("/api/history/entities")
@@ -843,6 +846,9 @@ async def selected_live(
     if country not in {item.value for item in Countries}:
         raise HTTPException(status_code=400, detail="Choose a country from the list.")
 
+    selections = await read_selected_entities()
+    selected_artist_uris = {row["entity_uri"] for row in selections if row["entity_type"] == "artist"}
+    selected_track_uris = {row["entity_uri"] for row in selections if row["entity_type"] == "track"}
     scraper = await get_spotify_scraper()
     response: dict[str, Any] = {"country": country, "cadence": cadence, "songs": [], "artists": [], "history": {}}
     for entity_type in ("track", "artist"):
@@ -864,17 +870,12 @@ async def selected_live(
         entries = payload.get("entries") if isinstance(payload, dict) else None
         if not isinstance(entries, list):
             raise HTTPException(status_code=502, detail="Spotify returned an unsupported chart format.")
-        try:
-            response["history"][entity_type] = await prepare_chart_history(
-                chart_type, country, "latest", payload, None
-            )
-        except ChartHistoryStorageError:
-            response["history"][entity_type] = {"status": "unavailable", "reason": "History storage is unavailable."}
-
         output_key = "songs" if entity_type == "track" else "artists"
         chart_date = (payload.get("displayChart") or {}).get("date", "Latest")
         for entry in entries:
-            if not isinstance(entry, dict):
+            if not isinstance(entry, dict) or not live_entry_matches(
+                entry, chart_type, selected_artist_uris, selected_track_uris
+            ):
                 continue
             uri = entry_entity_uri(entry)
             values = snapshot_values(entry)
@@ -990,26 +991,38 @@ async def selected_history(
     return {"chartType": chart_type, "country": country, "entity": entity, "points": points}
 
 
-def focused_artist_matches(entry: dict[str, Any], entity_type: str) -> bool:
-    metadata = entry.get({"track": "trackMetadata", "artist": "artistMetadata", "album": "albumMetadata"}[entity_type]) or {}
-    if entity_type == "artist":
-        artist_uri = metadata.get("artistUri") or entry_entity_uri(entry)
-        artist_name = str(metadata.get("artistName") or "").casefold()
-        return artist_uri in FOCUSED_ARTIST_URIS or artist_name in {name.casefold() for name in FOCUSED_ARTIST_NAMES}
-
-    if entity_type == "track" and entry_entity_uri(entry) == FOCUSED_TRACK_URI:
-        return True
-
+def metadata_artist_uris(metadata: dict[str, Any]) -> set[str]:
     artists = metadata.get("artists") or []
-    return any(
-        isinstance(artist, dict)
-        and (
-            artist.get("spotifyUri") in FOCUSED_ARTIST_URIS
-            or artist.get("uri") in FOCUSED_ARTIST_URIS
-            or str(artist.get("name", "")).casefold() in {name.casefold() for name in FOCUSED_ARTIST_NAMES}
-        )
-        for artist in artists
-    )
+    if not isinstance(artists, list):
+        return set()
+    uris: set[str] = set()
+    for artist in artists:
+        if not isinstance(artist, dict):
+            continue
+        uri = artist.get("spotifyUri") or artist.get("artistUri") or artist.get("uri")
+        if isinstance(uri, str) and uri.startswith("spotify:artist:"):
+            uris.add(uri)
+    return uris
+
+
+def live_entry_matches(
+    entry: dict[str, Any],
+    chart_type: str,
+    selected_artist_uris: set[str],
+    selected_track_uris: set[str],
+) -> bool:
+    if chart_type in {"daily_top_artists", "weekly_top_artists"}:
+        return entry_entity_uri(entry) in selected_artist_uris
+
+    if chart_type == "weekly_top_albums":
+        metadata = entry.get("albumMetadata") or {}
+        return bool(metadata_artist_uris(metadata) & selected_artist_uris)
+
+    track_uri = entry_entity_uri(entry)
+    if track_uri in selected_track_uris:
+        return True
+    metadata = entry.get("trackMetadata") or {}
+    return bool(metadata_artist_uris(metadata) & selected_artist_uris)
 
 
 def focused_chart_item(entry: dict[str, Any], country_code: str, chart_date: str) -> dict[str, Any] | None:
@@ -1017,7 +1030,7 @@ def focused_chart_item(entry: dict[str, Any], country_code: str, chart_date: str
     if not values:
         return None
 
-    entity_type, name, artists, streams, rank = values
+    entity_type, name, artists, streams, rank = values[:5]
     metadata = entry.get({"track": "trackMetadata", "artist": "artistMetadata", "album": "albumMetadata"}[entity_type]) or {}
     stats = entry.get("chartEntryData") or {}
     metric = stats.get("rankingMetric") or {}
@@ -1041,13 +1054,13 @@ def focused_chart_item(entry: dict[str, Any], country_code: str, chart_date: str
     }
 
 
-focused_chart_scan_tasks: dict[tuple[str, str, str], asyncio.Task] = {}
+focused_chart_scan_tasks: dict[tuple[str, ...], asyncio.Task] = {}
 
 
-def pending_focused_scan(cadence: str, entity_type: str) -> dict[str, Any]:
-    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+def pending_focused_scan(cadence: str, entity_type: str, chart_type: str | None = None) -> dict[str, Any]:
+    chart_type = chart_type or f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
     return {
-        "artist": {"entityName": FOCUSED_ARTIST_NAME},
+        "artist": {"entityName": "Saved selections"},
         "cadence": cadence,
         "entityType": entity_type,
         "chartType": chart_type,
@@ -1056,6 +1069,7 @@ def pending_focused_scan(cadence: str, entity_type: str) -> dict[str, Any]:
         "marketsScanned": 0,
         "matchingRegions": 0,
         "failedRegions": [],
+        "marketDiagnostics": [],
         "historySavedRegions": 0,
         "historyStorageAvailable": None,
         "releases": [],
@@ -1064,71 +1078,40 @@ def pending_focused_scan(cadence: str, entity_type: str) -> dict[str, Any]:
     }
 
 
-async def load_focused_snapshot(cadence: str, entity_type: str) -> dict[str, Any] | None:
-    pool = await get_history_pool()
-    row = await pool.fetchrow(
-        """
-        SELECT payload, fetched_at
-        FROM public.spotify_focused_chart_snapshots
-        WHERE cadence = $1 AND entity_type = $2 AND market_scope = 'all'
-          AND snapshot_date = CURRENT_DATE
-        """,
-        cadence,
-        entity_type,
-    )
-    if row is None:
-        return None
-
-    payload = row["payload"]
-    if isinstance(payload, str):
-        payload = json.loads(payload)
-    if not isinstance(payload, dict) or payload.get("snapshotVersion") != 2:
-        return None
-
-    cached_payload = dict(payload)
-    cached_payload["snapshotReused"] = True
-    cached_payload["snapshotFetchedAt"] = row["fetched_at"].isoformat()
-    return cached_payload
-
-
-async def save_focused_snapshot(cadence: str, entity_type: str, payload: dict[str, Any]) -> None:
-    pool = await get_history_pool()
-    await pool.execute(
-        """
-        INSERT INTO public.spotify_focused_chart_snapshots
-            (cadence, entity_type, market_scope, snapshot_date, payload, fetched_at)
-        VALUES ($1, $2, 'all', CURRENT_DATE, $3::jsonb, now())
-        ON CONFLICT (cadence, entity_type, market_scope, snapshot_date)
-        DO UPDATE SET payload = EXCLUDED.payload, fetched_at = EXCLUDED.fetched_at
-        """,
-        cadence,
-        entity_type,
-        json.dumps(payload, separators=(",", ":")),
-    )
-
-
-async def run_focused_scan_and_cache(cache_key: tuple[str, str, str], cadence: str, entity_type: str, scope: str) -> None:
+async def run_focused_scan_and_cache(
+    cache_key: tuple[str, ...], cadence: str, entity_type: str, scope: str, chart_type: str
+) -> None:
+    response: dict[str, Any] | None = None
     try:
-        response = await scan_focused_live(cadence, entity_type, scope)
+        response = await scan_focused_live(cadence, entity_type, scope, chart_type)
         if scope == "all":
             pool = await get_history_pool()
-            if response["marketsScanned"] > 0 and not response["failedRegions"]:
-                try:
-                    response["snapshotVersion"] = 2
-                    await save_focused_snapshot(cadence, entity_type, response)
-                    await pool.execute("UPDATE public.spotify_focused_scan_jobs SET status='complete', lease_owner=NULL, lease_expires_at=NULL, last_error=NULL, updated_at=now() WHERE cadence=$1 AND entity_type=$2", cadence, entity_type)
-                except Exception as error:
-                    print(f"[v0] Focused chart snapshot could not be saved: {type(error).__name__}")
-                    response["historyStorageAvailable"] = False
-            else:
-                await pool.execute("UPDATE public.spotify_focused_scan_jobs SET status='failed', lease_owner=NULL, lease_expires_at=NULL, last_error='one_or_more_markets_failed', updated_at=now() WHERE cadence=$1 AND entity_type=$2", cadence, entity_type)
+            failed_markets = [item for item in response["marketDiagnostics"] if item["status"] == "failed"]
+            completed_markets = [item["countryCode"] for item in response["marketDiagnostics"] if item["status"] == "succeeded"]
+            status = "partial" if failed_markets else "complete"
+            await pool.execute(
+                """UPDATE public.spotify_focused_scan_jobs
+                   SET status=$3, completed_markets=$4, failed_markets=$5::jsonb,
+                       partial_payload=$6::jsonb, lease_owner=NULL, lease_expires_at=NULL,
+                       attempt_count=attempt_count+1, last_error=$7, updated_at=now()
+                   WHERE cadence=$1 AND entity_type=$2""",
+                cadence, entity_type, status, completed_markets, json.dumps(failed_markets),
+                json.dumps(response), "one_or_more_markets_failed" if failed_markets else None,
+            )
     except Exception as error:
-        response = pending_focused_scan(cadence, entity_type)
-        response.update({
-            "scanInProgress": False,
-            "scanError": "Spotify could not load the regional charts. Try again shortly.",
-            "failedRegions": [country.name.replace("_", " ").title() for country in Countries],
-        })
+        if response is None:
+            response = pending_focused_scan(cadence, entity_type, chart_type)
+            response.update({
+                "scanInProgress": False,
+                "scanError": f"The regional scan stopped before market results were available ({type(error).__name__}).",
+                "failedRegions": [],
+                "marketDiagnostics": [],
+            })
+        else:
+            response.update({
+                "scanInProgress": False,
+                "scanError": "The regional scan finished, but its results could not be saved for recovery.",
+            })
         if scope == "all":
             try:
                 pool = await get_history_pool()
@@ -1146,196 +1129,160 @@ async def focused_live(
     entity_type: Literal["track", "artist", "album"] = Query("track"),
     scope: Literal["global", "all"] = Query("global"),
     refresh: bool = Query(False),
+    chart_type: str | None = Query(None),
 ) -> dict[str, Any]:
-    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
-    cache_key = (cadence, entity_type, scope)
+    default_chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+    selected_chart_type = chart_type or default_chart_type
+    supported = {
+        "daily_top_songs": ("daily", "track"), "daily_viral_songs": ("daily", "track"),
+        "weekly_top_songs": ("weekly", "track"), "daily_top_artists": ("daily", "artist"),
+        "weekly_top_artists": ("weekly", "artist"), "weekly_top_albums": ("weekly", "album"),
+    }
+    if selected_chart_type not in supported or supported[selected_chart_type] != (cadence, entity_type):
+        raise HTTPException(status_code=400, detail="Choose a supported chart for this Live view.")
+    require_spotify_connection()
+
+    selections = await read_selected_entities()
+    selected_uris = sorted(row["entity_uri"] for row in selections)
+    if not selected_uris:
+        return {
+            "artist": {"entityName": "Saved selections"}, "cadence": cadence, "entityType": entity_type,
+            "chartType": selected_chart_type, "marketScope": scope, "marketsTotal": 0,
+            "marketsScanned": 0, "matchingRegions": 0, "failedRegions": [], "marketDiagnostics": [],
+            "historySavedRegions": 0, "historyStorageAvailable": None, "releases": [], "regions": [],
+            "scanInProgress": False,
+        }
+    selection_fingerprint = __import__("hashlib").sha256("\n".join(selected_uris).encode()).hexdigest()
+    cache_key = (cadence, entity_type, scope, selected_chart_type, selection_fingerprint)
     async with focused_chart_cache_lock:
         cached = focused_chart_cache.get(cache_key)
-        cache_ttl = 15 if cached and cached[1].get("scanError") else FOCUSED_CHART_CACHE_TTL
-        if not refresh and cached and time.monotonic() - cached[0] < cache_ttl:
+        if not refresh and cached and time.monotonic() - cached[0] < FOCUSED_CHART_CACHE_TTL:
             return cached[1]
-        if scope == "all" and refresh:
+        if refresh:
             focused_chart_cache.pop(cache_key, None)
 
-    if scope == "all" and not refresh:
-        async with focused_chart_cache_lock:
-            active_scan = focused_chart_scan_tasks.get(cache_key)
-            if active_scan is not None and not active_scan.done():
-                return pending_focused_scan(cadence, entity_type)
-        try:
-            persisted = await load_focused_snapshot(cadence, entity_type)
-        except Exception as error:
-            print(f"[v0] Focused chart snapshot could not be loaded: {type(error).__name__}")
-            persisted = None
-        if persisted is not None:
-            async with focused_chart_cache_lock:
-                focused_chart_cache[cache_key] = (time.monotonic(), persisted)
-            return persisted
-
     if scope == "all":
-        pool = await get_history_pool()
-        await pool.execute(
-            """INSERT INTO public.spotify_focused_scan_jobs (cadence, entity_type, status)
-               VALUES ($1, $2, 'pending') ON CONFLICT (cadence, entity_type) DO UPDATE
-               SET status=CASE WHEN public.spotify_focused_scan_jobs.status IN ('complete','failed')
-                               THEN 'pending' ELSE public.spotify_focused_scan_jobs.status END,
-                   updated_at=now()""",
-            cadence, entity_type,
-        )
         async with focused_chart_cache_lock:
             task = focused_chart_scan_tasks.get(cache_key)
             if task is None or task.done():
-                task = asyncio.create_task(run_focused_scan_and_cache(cache_key, cadence, entity_type, scope))
+                pool = await get_history_pool()
+                await pool.execute(
+                    """INSERT INTO public.spotify_focused_scan_jobs (cadence, entity_type, status)
+                       VALUES ($1, $2, 'pending') ON CONFLICT (cadence, entity_type) DO UPDATE
+                       SET status='pending', updated_at=now()""",
+                    cadence, entity_type,
+                )
+                task = asyncio.create_task(
+                    run_focused_scan_and_cache(cache_key, cadence, entity_type, scope, selected_chart_type)
+                )
                 focused_chart_scan_tasks[cache_key] = task
-        return pending_focused_scan(cadence, entity_type)
+            return pending_focused_scan(cadence, entity_type, selected_chart_type)
 
-    response = await scan_focused_live(cadence, entity_type, scope)
+    response = await scan_focused_live(cadence, entity_type, scope, selected_chart_type)
     async with focused_chart_cache_lock:
         focused_chart_cache[cache_key] = (time.monotonic(), response)
     return response
 
 
-async def update_focused_scan_checkpoint(cadence: str, entity_type: str, country_code: str, payload: dict[str, Any] | None) -> None:
-    pool = await get_history_pool()
-    if payload is None:
-        await pool.execute(
-            """INSERT INTO public.spotify_focused_scan_jobs (cadence, entity_type, failed_markets)
-               VALUES ($1, $2, jsonb_build_array(jsonb_build_object('country', $3, 'error', 'fetch_failed')))
-               ON CONFLICT (cadence, entity_type) DO UPDATE SET
-                 failed_markets = (SELECT COALESCE(jsonb_agg(item), '[]'::jsonb) FROM
-                   (SELECT value AS item FROM jsonb_array_elements(public.spotify_focused_scan_jobs.failed_markets)
-                    WHERE value->>'country' <> $3 UNION ALL SELECT jsonb_build_object('country',$3,'error','fetch_failed')) failures),
-                 updated_at=now()""",
-            cadence, entity_type, country_code,
-        )
-        return
-    await pool.execute(
-        """INSERT INTO public.spotify_focused_scan_jobs
-             (cadence, entity_type, completed_markets, failed_markets, partial_payload, status)
-           VALUES ($1, $2, ARRAY[$3]::text[], '[]'::jsonb, jsonb_build_object($3, $4::jsonb), 'running')
-           ON CONFLICT (cadence, entity_type) DO UPDATE SET
-             completed_markets = array_append(array_remove(public.spotify_focused_scan_jobs.completed_markets, $3), $3),
-             failed_markets = (SELECT COALESCE(jsonb_agg(value), '[]'::jsonb) FROM
-               jsonb_array_elements(public.spotify_focused_scan_jobs.failed_markets) WHERE value->>'country' <> $3),
-             partial_payload = jsonb_set(public.spotify_focused_scan_jobs.partial_payload, ARRAY[$3], $4::jsonb, true),
-             status='running', updated_at=now()""",
-        cadence, entity_type, country_code, json.dumps(payload, separators=(",", ":")),
-    )
-
-
-async def scan_focused_live(cadence: str, entity_type: str, scope: str) -> dict[str, Any]:
-    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+async def scan_focused_live(
+    cadence: str,
+    entity_type: str,
+    scope: str,
+    chart_type: str | None = None,
+) -> dict[str, Any]:
+    chart_type = chart_type or f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+    selections = await read_selected_entities()
+    selected_artist_uris = {row["entity_uri"] for row in selections if row["entity_type"] == "artist"}
+    selected_track_uris = {row["entity_uri"] for row in selections if row["entity_type"] == "track"}
+    if chart_type == "weekly_top_albums":
+        selected_track_uris = set()
     scraper = await get_spotify_scraper()
     method = getattr(scraper, CHART_METHODS[chart_type])
     markets = [Countries.GLOBAL] if scope == "global" else list(Countries)
-    checkpoint = None
-    if scope == "all":
-        pool = await get_history_pool()
-        checkpoint = await pool.fetchrow(
-            "SELECT completed_markets, failed_markets, partial_payload FROM public.spotify_focused_scan_jobs WHERE cadence=$1 AND entity_type=$2",
-            cadence, entity_type,
-        )
-    completed = set(checkpoint["completed_markets"] or []) if checkpoint else set()
-    partial = checkpoint["partial_payload"] or {} if checkpoint else {}
-    if isinstance(partial, str):
-        partial = json.loads(partial)
     semaphore = asyncio.Semaphore(2)
-    history_saved_regions = 0
-    history_storage_available = True
 
-    async def fetch_market(country) -> tuple[Any, dict[str, Any] | None, bool]:
-        nonlocal history_storage_available
-        if country.value in completed and isinstance(partial.get(country.value), dict):
-            saved = False
-            try:
-                history = await prepare_chart_history(chart_type, country.value, "latest", partial[country.value], None)
-                saved = bool(history.get("supported"))
-            except (ChartHistoryStorageError, HTTPException):
-                history_storage_available = False
-            return country, partial[country.value], saved
+    async def fetch_market(country) -> tuple[Any, dict[str, Any] | None, dict[str, Any]]:
         async with semaphore:
             try:
                 payload = await method(country.value, "latest")
-            except (httpx.HTTPError, ValueError):
-                if scope == "all":
-                    await update_focused_scan_checkpoint(cadence, entity_type, country.value, None)
-                return country, None, False
-
-            entries = payload.get("entries") if isinstance(payload, dict) else None
-            if not isinstance(entries, list):
-                if scope == "all":
-                    await update_focused_scan_checkpoint(cadence, entity_type, country.value, None)
-                return country, None, False
-            if scope == "all":
-                await update_focused_scan_checkpoint(cadence, entity_type, country.value, payload)
-            saved = False
-            try:
-                history = await prepare_chart_history(chart_type, country.value, "latest", payload, None)
-                saved = bool(history.get("supported"))
-            except (ChartHistoryStorageError, HTTPException):
-                history_storage_available = False
-            return country, payload, saved
+                if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
+                    raise ValueError("Spotify returned an unsupported chart payload.")
+                diagnostic = scraper.get_chart_diagnostics(chart_type, country.value, "latest")
+                diagnostic.update({"countryCode": country.value, "countryName": COUNTRY_NAMES.get(country.value, country.value),
+                                   "chartType": chart_type, "status": "succeeded"})
+                return country, payload, diagnostic
+            except Exception as error:
+                diagnostic = scraper.get_chart_diagnostics(chart_type, country.value, "latest")
+                response = getattr(error, "response", None)
+                diagnostic.update({
+                    "countryCode": country.value,
+                    "countryName": COUNTRY_NAMES.get(country.value, country.value),
+                    "chartType": chart_type,
+                    "status": "failed",
+                    "httpStatus": response.status_code if response is not None else diagnostic.get("httpStatus"),
+                    "error": type(error).__name__,
+                    "errorResponse": response.text[:500] if response is not None else diagnostic.get("errorResponse"),
+                    "timeout": isinstance(error, httpx.TimeoutException) or bool(diagnostic.get("timeout")),
+                    "rateLimited": bool(diagnostic.get("rateLimited")) or (response is not None and response.status_code == 429),
+                })
+                return country, None, diagnostic
 
     results = await asyncio.gather(*(fetch_market(country) for country in markets))
     releases: dict[str, dict[str, Any]] = {}
     regions: list[dict[str, Any]] = []
-    failed_regions: list[str] = []
-
-    for country, payload, saved in results:
+    diagnostics: list[dict[str, Any]] = []
+    for country, payload, diagnostic in results:
+        diagnostics.append(diagnostic)
         if payload is None:
-            failed_regions.append(COUNTRY_NAMES.get(country.value, country.value))
             continue
-        if saved:
-            history_saved_regions += 1
-
-        display_chart = payload.get("displayChart") or {}
-        chart_date = str(display_chart.get("date") or "Latest")
+        chart_date = str((payload.get("displayChart") or {}).get("date") or "Latest")
         region_items = []
-        for entry in payload.get("entries") or []:
-            if not isinstance(entry, dict) or not focused_artist_matches(entry, entity_type):
+        for entry in payload["entries"]:
+            if not isinstance(entry, dict) or not live_entry_matches(
+                entry, chart_type, selected_artist_uris, selected_track_uris
+            ):
                 continue
             item = focused_chart_item(entry, country.value, chart_date)
             if not item or not item["entityUri"]:
                 continue
             region_items.append(item)
             release = releases.setdefault(item["entityUri"], {
-                "entityUri": item["entityUri"],
-                "entityType": item["entityType"],
-                "entityName": item["entityName"],
-                "artistNames": item["artistNames"],
-                "imageUrl": item["imageUrl"],
-                "regions": [],
+                "entityUri": item["entityUri"], "entityType": item["entityType"],
+                "entityName": item["entityName"], "artistNames": item["artistNames"],
+                "imageUrl": item["imageUrl"], "regions": [],
             })
-            release["regions"].append({key: value for key, value in item.items() if key not in {"entityUri", "entityType", "entityName", "artistNames", "imageUrl"}})
-
+            release["regions"].append({key: value for key, value in item.items()
+                                        if key not in {"entityUri", "entityType", "entityName", "artistNames", "imageUrl"}})
         if region_items:
             region_items.sort(key=lambda item: item["chartRank"] or 10_000)
-            regions.append({
-                "regionCode": country.value,
-                "regionName": COUNTRY_NAMES.get(country.value, country.value),
-                "chartDate": chart_date,
-                "entries": region_items,
-            })
+            regions.append({"regionCode": country.value, "regionName": COUNTRY_NAMES.get(country.value, country.value),
+                            "chartDate": chart_date, "entries": region_items})
 
-    if not regions and failed_regions:
-        message = "Spotify could not load the Global chart. Try again shortly." if scope == "global" else "Spotify could not load any regional charts. Try again shortly."
-        raise HTTPException(status_code=502, detail=message)
-
+    failed = [item for item in diagnostics if item["status"] == "failed"]
+    if not regions and failed and scope == "global":
+        raise HTTPException(status_code=502, detail={"message": "Spotify could not load the Global chart.", "marketDiagnostics": diagnostics})
     regions.sort(key=lambda region: (region["regionCode"] != "GLOBAL", region["regionName"]))
     release_items = list(releases.values())
     release_items.sort(key=lambda release: (-len(release["regions"]), release["entityName"].casefold()))
+    album_metadata_missing = chart_type == "weekly_top_albums" and bool(selected_artist_uris) and any(
+        not metadata_artist_uris(entry.get("albumMetadata") or {})
+        for _, payload, _ in results if payload
+        for entry in payload.get("entries", []) if isinstance(entry, dict)
+    )
     return {
-        "artist": {"entityName": FOCUSED_ARTIST_NAME},
+        "artist": {"entityName": "Saved selections"},
         "cadence": cadence,
         "entityType": entity_type,
         "chartType": chart_type,
         "marketScope": scope,
         "marketsTotal": len(markets),
-        "marketsScanned": len(markets) - len(failed_regions),
+        "marketsScanned": len(markets) - len(failed),
         "matchingRegions": len(regions),
-        "failedRegions": failed_regions,
-        "historySavedRegions": history_saved_regions,
-        "historyStorageAvailable": history_storage_available,
+        "failedRegions": [item["countryName"] for item in failed],
+        "marketDiagnostics": diagnostics,
+        "historySavedRegions": 0,
+        "historyStorageAvailable": None,
+        "metadataLimitation": "Spotify did not include artist IDs for one or more album chart entries; those entries were not matched." if album_metadata_missing else None,
         "releases": release_items,
         "regions": regions,
         "scanInProgress": False,
@@ -1352,10 +1299,6 @@ def history_start_date(range_value: str) -> calendar_date | None:
     if days < 1 or days > 3650:
         raise HTTPException(status_code=400, detail="Choose a valid history range.")
     return calendar_date.today() - timedelta(days=days)
-
-
-def focused_history_filter_sql() -> str:
-    return """(($2 = 'artist' AND track_uri = ANY($5::text[])) OR ($2 IN ('track', 'album') AND (track_uri = $6 OR string_to_array(COALESCE(artist_names, ''), ', ') && $7::text[])))"""
 
 
 def history_point(row) -> dict[str, Any]:
@@ -1413,11 +1356,15 @@ def group_history_points(points: list[dict[str, Any]]) -> tuple[list[dict[str, A
 async def focused_history(
     cadence: Literal["daily", "weekly"] = Query("daily"),
     entity_type: Literal["track", "artist", "album"] = Query("track"),
+    chart_type: str | None = Query(None),
     range: str = Query("90", min_length=1, max_length=10),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0, le=1000000),
 ) -> dict[str, Any]:
-    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+    default_chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+    chart_type = chart_type or default_chart_type
+    if chart_type not in HISTORY_CHART_TYPES or HISTORY_CHART_TYPES[chart_type] != entity_type:
+        raise HTTPException(status_code=400, detail="Choose a supported chart for this History view.")
     start_date = history_start_date(range)
     market_codes = [country.value for country in Countries]
     try:
@@ -1432,12 +1379,32 @@ async def focused_history(
                 FROM public.spotify_chart_snapshots
                 WHERE chart_type = $1 AND entity_type = $2 AND country_code = ANY($3::text[])
                   AND ($4::date IS NULL OR chart_date >= $4::date)
-                  AND EXISTS (
-                      SELECT 1 FROM public.spotify_chart_tracking_configs c
-                      WHERE c.entity_uri = spotify_chart_snapshots.track_uri
-                        AND c.chart_type = spotify_chart_snapshots.chart_type
-                        AND c.country_code = spotify_chart_snapshots.country_code
-                        AND c.enabled = true
+                  AND (
+                      EXISTS (
+                          SELECT 1 FROM public.spotify_chart_selections s
+                          WHERE s.entity_uri = spotify_chart_snapshots.track_uri
+                            AND s.is_archived = false
+                      )
+                      OR EXISTS (
+                          SELECT 1
+                          FROM public.spotify_chart_payload_cache pc
+                          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pc.payload->'entries', '[]'::jsonb)) chart_entry
+                          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(
+                              chart_entry->(CASE WHEN $2 = 'album' THEN 'albumMetadata' ELSE 'trackMetadata' END)->'artists',
+                              '[]'::jsonb
+                          )) chart_artist
+                          JOIN public.spotify_chart_selections s
+                            ON s.entity_uri = COALESCE(chart_artist->>'spotifyUri', chart_artist->>'artistUri', chart_artist->>'uri')
+                           AND s.entity_type = 'artist' AND s.is_archived = false
+                          WHERE pc.chart_type = spotify_chart_snapshots.chart_type
+                            AND pc.country_code = spotify_chart_snapshots.country_code
+                            AND pc.chart_date = spotify_chart_snapshots.chart_date
+                            AND COALESCE(
+                                chart_entry->'trackMetadata'->>'trackUri', chart_entry->'albumMetadata'->>'albumUri',
+                                chart_entry->'artistMetadata'->>'artistUri', chart_entry->>'trackUri',
+                                chart_entry->>'albumUri', chart_entry->>'artistUri'
+                            ) = spotify_chart_snapshots.track_uri
+                      )
                   )
                 ORDER BY country_code, track_uri, chart_date DESC, fetched_at DESC
             )
@@ -1478,11 +1445,15 @@ async def focused_history_trend(
     entity_uri: str = Query(..., min_length=16, max_length=128),
     cadence: Literal["daily", "weekly"] = Query("daily"),
     entity_type: Literal["track", "artist", "album"] = Query("track"),
+    chart_type: str | None = Query(None),
     range: str = Query("90", min_length=1, max_length=10),
 ) -> dict[str, Any]:
     if not is_valid_entity_uri(entity_uri, entity_type):
         raise HTTPException(status_code=400, detail="Choose a valid chart release.")
-    chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+    default_chart_type = f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
+    chart_type = chart_type or default_chart_type
+    if chart_type not in HISTORY_CHART_TYPES or HISTORY_CHART_TYPES[chart_type] != entity_type:
+        raise HTTPException(status_code=400, detail="Choose a supported chart for this History trend.")
     start_date = history_start_date(range)
     market_codes = [country.value for country in Countries]
     try:
@@ -1493,12 +1464,27 @@ async def focused_history_trend(
             FROM public.spotify_chart_snapshots
             WHERE chart_type = $1 AND entity_type = $2 AND track_uri = $3
               AND country_code = ANY($4::text[]) AND ($5::date IS NULL OR chart_date >= $5::date)
-              AND EXISTS (
-                  SELECT 1 FROM public.spotify_chart_tracking_configs c
-                  WHERE c.entity_uri = spotify_chart_snapshots.track_uri
-                    AND c.chart_type = spotify_chart_snapshots.chart_type
-                    AND c.country_code = spotify_chart_snapshots.country_code
-                    AND c.enabled = true
+              AND (
+                  EXISTS (
+                      SELECT 1 FROM public.spotify_chart_selections s
+                      WHERE s.entity_uri = spotify_chart_snapshots.track_uri AND s.is_archived = false
+                  )
+                  OR EXISTS (
+                      SELECT 1
+                      FROM public.spotify_chart_payload_cache pc
+                      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pc.payload->'entries', '[]'::jsonb)) chart_entry
+                      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(
+                          chart_entry->(CASE WHEN $2 = 'album' THEN 'albumMetadata' ELSE 'trackMetadata' END)->'artists',
+                          '[]'::jsonb
+                      )) chart_artist
+                      JOIN public.spotify_chart_selections s
+                        ON s.entity_uri = COALESCE(chart_artist->>'spotifyUri', chart_artist->>'artistUri', chart_artist->>'uri')
+                       AND s.entity_type = 'artist' AND s.is_archived = false
+                      WHERE pc.chart_type = spotify_chart_snapshots.chart_type
+                        AND pc.country_code = spotify_chart_snapshots.country_code
+                        AND pc.chart_date = spotify_chart_snapshots.chart_date
+                        AND COALESCE(chart_entry->'trackMetadata'->>'trackUri', chart_entry->'albumMetadata'->>'albumUri') = spotify_chart_snapshots.track_uri
+                  )
               )
             ORDER BY country_code ASC, chart_date ASC
             """,
@@ -1613,23 +1599,13 @@ async def disconnect() -> dict[str, bool]:
 
 async def decorate_chart(raw_payload: dict[str, Any], chart_type: str, country: str, requested_date: str) -> dict[str, Any]:
     result = json.loads(json.dumps(raw_payload))
-    if chart_type not in HISTORY_CHART_TYPES:
-        result["chartHistory"] = {
-            "supported": False, "complete": False, "status": "unsupported",
-            "reason": "History is available for daily and weekly Top Songs, Top Artists, and Top Albums charts.",
-        }
-        return result
-    try:
-        history_info = await prepare_chart_history(chart_type, country, requested_date, result, None)
-        history_info["metric"] = "rank" if HISTORY_CHART_TYPES[chart_type] == "artist" else "streams"
-        result["chartHistory"] = history_info
-    except (ChartHistoryStorageError, HTTPException) as error:
-        if isinstance(error, HTTPException) and error.status_code != 503:
-            raise
-        result["chartHistory"] = {
-            "supported": False, "complete": False, "status": "unavailable",
-            "reason": "Historical storage is unavailable; snapshots could not be saved.",
-        }
+    result["chartHistory"] = {
+        "supported": False,
+        "complete": False,
+        "status": "browsing_only",
+        "metric": "rank" if HISTORY_CHART_TYPES.get(chart_type) == "artist" else "streams",
+        "reason": "Charts Explorer is browse-only. History is collected by the tracked-entity collector.",
+    }
     return result
 
 
@@ -1778,8 +1754,10 @@ async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[s
 
     entity_uris = list(dict.fromkeys(request.entity_uris))
     target_entity_uris = list(dict.fromkeys(request.target_entity_uris or [])) or None
-    if any(not is_valid_entity_uri(uri, HISTORY_CHART_TYPES[chart_type]) for uri in entity_uris + (target_entity_uris or [])):
-        raise HTTPException(status_code=400, detail="The chart entity list is invalid.")
+    allowed_selection_types = {"artist"} if chart_type in {"daily_top_artists", "weekly_top_artists", "weekly_top_albums"} else {"artist", "track"}
+    if any(not is_valid_entity_uri(uri) or uri.split(":")[1] not in allowed_selection_types
+           for uri in entity_uris + (target_entity_uris or [])):
+        raise HTTPException(status_code=400, detail="The chart selection list is invalid.")
 
     try:
         return await run_durable_history_backfill_batch(

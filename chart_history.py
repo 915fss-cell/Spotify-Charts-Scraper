@@ -15,6 +15,7 @@ from spotify_charts import SpotifyCharts
 
 CHART_STEPS = {
     "daily_top_songs": 1,
+    "daily_viral_songs": 1,
     "weekly_top_songs": 7,
     "daily_top_artists": 1,
     "weekly_top_artists": 7,
@@ -103,6 +104,19 @@ def entry_entity_uri(entry: dict[str, Any]) -> str | None:
     return None
 
 
+def _metadata_artist_uris(metadata: dict[str, Any]) -> set[str]:
+    artists = metadata.get("artists") or []
+    if not isinstance(artists, list):
+        return set()
+    return {
+        uri
+        for artist in artists
+        if isinstance(artist, dict)
+        for uri in (artist.get("spotifyUri") or artist.get("artistUri") or artist.get("uri"),)
+        if isinstance(uri, str) and uri.startswith("spotify:artist:")
+    }
+
+
 def optional_chart_int(stats: dict[str, Any], key: str, minimum: int = 0) -> int | None:
     try:
         value = int(stats.get(key))
@@ -188,12 +202,20 @@ async def save_chart_snapshot(
     entries: list[dict[str, Any]],
     allowed_entity_uris: set[str] | None = None,
     connection: asyncpg.Connection | None = None,
+    allowed_artist_uris: set[str] | None = None,
 ) -> int:
     deduplicated: dict[str, tuple[Any, ...]] = {}
     for entry in entries:
         uri = entry_entity_uri(entry)
         values = snapshot_values(entry)
-        if uri and values and (allowed_entity_uris is None or uri in allowed_entity_uris):
+        metadata_key = {"track": "trackMetadata", "artist": "artistMetadata", "album": "albumMetadata"}.get(uri.split(":")[1]) if uri else None
+        metadata = entry.get(metadata_key) or {} if metadata_key else {}
+        artist_matches = bool(allowed_artist_uris and any(
+            artist_uri in allowed_artist_uris for artist_uri in _metadata_artist_uris(metadata)
+        ))
+        if uri and values and (
+            allowed_entity_uris is None or uri in allowed_entity_uris or artist_matches
+        ):
             (
                 entity_type,
                 entity_name,
@@ -729,7 +751,10 @@ async def run_durable_history_backfill_batch(
                            ON CONFLICT (chart_type, country_code, requested_date) DO NOTHING""",
                         chart_type, country, requested, json.dumps(payload, separators=(",", ":")), response_date,
                     )
-                    await save_chart_snapshot(pool, chart_type, country, response_date, entries, allowed_uris, connection)
+                    await save_chart_snapshot(
+                        pool, chart_type, country, response_date, entries, allowed_uris, connection,
+                        allowed_artist_uris={uri for uri in allowed_uris or set() if uri.startswith("spotify:artist:")},
+                    )
                     await connection.execute(
                         """UPDATE public.spotify_chart_refresh_jobs SET status = 'succeeded',
                              response_chart_date = $5, completed_at = now(), fetched_at = now(),
