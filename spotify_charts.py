@@ -1,5 +1,7 @@
 import asyncio
 from copy import deepcopy
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from time import monotonic
 from httpx import AsyncClient, Client
 from urllib.parse import urlparse, parse_qs
@@ -41,6 +43,24 @@ async def _defer_chart_requests(delay: float) -> None:
     global _next_chart_request_at
     async with _chart_request_lock:
         _next_chart_request_at = max(_next_chart_request_at, monotonic() + delay)
+
+
+def parse_retry_after_delay(value: str | None, now: datetime | None = None) -> float | None:
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        current_time = now or datetime.now(timezone.utc)
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
+        return max(0.0, (retry_at - current_time).total_seconds())
 
 
 class AuthRequestHandler(BaseHTTPRequestHandler):
@@ -151,14 +171,12 @@ class SpotifyCharts:
                     payload = response.json()
                     break
 
-                retry_after = response.headers.get("Retry-After")
-                try:
-                    delay = max(float(retry_after), 0.25)
-                except (TypeError, ValueError):
-                    delay = 0.5 * (2**attempt)
+                retry_after_delay = parse_retry_after_delay(response.headers.get("Retry-After"))
+                delay = max(retry_after_delay, 0.25) if retry_after_delay is not None else 0.5 * (2**attempt)
+                delay = min(delay, CHART_RATE_LIMIT_MAX_COOLDOWN)
 
                 if response.status_code == 429:
-                    await _defer_chart_requests(min(delay, CHART_RATE_LIMIT_MAX_COOLDOWN))
+                    await _defer_chart_requests(delay)
                 if attempt == 2:
                     response.raise_for_status()
                 await asyncio.sleep(delay)

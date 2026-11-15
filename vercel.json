@@ -1,0 +1,10 @@
+{
+  "schedules": {
+    "collection-tick": {
+      "schedule": "*/15 * * * *",
+      "path": "/api/collection/tick",
+      "requestMethod": "GET",
+      "jitter": 15
+    }
+  }
+}
