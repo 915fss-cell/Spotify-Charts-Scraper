@@ -120,10 +120,7 @@
   }
 
   function releaseRegionRow(item, showTrend = false) {
-    const chartDate = !showTrend && item.chartDate
-      ? `<time class="focus-row-subtitle" datetime="${escapeHtml(item.chartDate)}">Chart date: ${escapeHtml(item.chartDate)}</time>`
-      : "";
-    return `<div class="focus-data-row"><div class="focus-row-rank">${escapeHtml(item.chartRank ?? "—")}${movementMarkup(item)}</div><div class="focus-row-copy"><strong class="focus-row-title">${escapeHtml(item.regionName)}</strong><span class="focus-row-subtitle">${escapeHtml(chartDetails(item))}</span>${chartDate}</div><div class="focus-row-metric"><strong>${escapeHtml(formatNumber(item.metricValue ?? item.streamCount))}</strong><span>${escapeHtml((item.metricType || (item.streamCount == null ? "rank" : "streams")).toLowerCase())}</span>${showTrend ? trendButton(item.entityUri, item.entityName) : ""}</div></div>`;
+    return `<div class="focus-data-row"><div class="focus-row-rank">${escapeHtml(item.chartRank ?? "—")}${movementMarkup(item)}</div><div class="focus-row-copy"><strong class="focus-row-title">${escapeHtml(item.regionName)}</strong><span class="focus-row-subtitle">${escapeHtml(chartDetails(item))}</span></div><div class="focus-row-metric"><strong>${escapeHtml(formatNumber(item.metricValue ?? item.streamCount))}</strong><span>${escapeHtml((item.metricType || (item.streamCount == null ? "rank" : "streams")).toLowerCase())}</span>${showTrend ? trendButton(item.entityUri, item.entityName) : ""}</div></div>`;
   }
 
   function regionEntryRow(item) {
@@ -153,8 +150,7 @@
   function renderRegionCard(region, isHistory = false) {
     const entries = region.entries || [];
     const subtitle = isHistory ? `${entries.length} saved releases` : chartTypeName();
-    const date = !isHistory && region.chartDate ? `<time class="focus-date">${escapeHtml(region.chartDate)}</time>` : "";
-    return `<article class="focus-region-card"><header class="focus-card-title"><strong>${escapeHtml(region.regionName)}</strong><span>${escapeHtml(subtitle)}</span>${date}</header><div class="focus-data-list">${entries.map((entry) => regionEntryRow(entry)).join("")}</div></article>`;
+    return `<article class="focus-region-card"><header class="focus-card-title"><strong>${escapeHtml(region.regionName)}</strong><span>${escapeHtml(subtitle)}</span></header><div class="focus-data-list">${entries.map((entry) => regionEntryRow(entry)).join("")}</div></article>`;
   }
 
   function renderResultCards(containerId, releases, regions, isHistory = false) {
@@ -178,6 +174,15 @@
     byId("live-results-title").textContent = state.view === "release"
       ? `${focusedSelectionName()} ${state.entityType === "artist" ? "in the artist chart" : `${state.entityType === "track" ? "songs" : "albums"} charting now`}`
       : `${chartTypeName()} by region`;
+    const chartDates = [
+      ...(payload.regions || []).map((region) => region.chartDate),
+      ...(payload.releases || []).flatMap((release) => (release.regions || []).map((region) => region.chartDate)),
+    ].filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))).sort();
+    const chartDate = chartDates[chartDates.length - 1];
+    const chartDateElement = byId("live-chart-date");
+    chartDateElement.hidden = !chartDate;
+    chartDateElement.textContent = chartDate ? `Chart date: ${chartDate}` : "";
+    if (chartDate) chartDateElement.dateTime = chartDate;
     const count = state.view === "release" ? payload.releases.length : payload.regions.length;
     const matchingRegionLabel = payload.matchingRegions === 1 ? "region" : "regions";
     byId("live-results-count").textContent = state.view === "release"
