@@ -518,9 +518,21 @@
         : "No appearances";
       byId("history-entity-detail-previous").disabled = historyEntityDetailOffset === 0;
       byId("history-entity-detail-next").disabled = !payload.hasMore;
+      const detailPanel = byId("history-entity-detail");
+      detailPanel.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "start",
+      });
+      detailPanel.focus({ preventScroll: true });
     } catch (error) {
-      byId("history-entity-detail").hidden = false;
+      const detailPanel = byId("history-entity-detail");
+      detailPanel.hidden = false;
       byId("history-entity-points").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
+      detailPanel.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "start",
+      });
+      detailPanel.focus({ preventScroll: true });
     }
   }
 
