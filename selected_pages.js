@@ -12,7 +12,6 @@
   let historyChart = null;
   let historyTrendData = null;
   let liveRequest = 0;
-  let isAutoRegionScanning = false;
   let historyRequest = 0;
   let historyOffset = 0;
   let historyEntitiesOffset = 0;
@@ -230,43 +229,12 @@
     return requestJson(`/api/focused/live?${params}`);
   }
 
-  async function loadAllRegionsAutomatically(requestId) {
-    isAutoRegionScanning = true;
-    const cadence = state.cadence;
-    const entityType = state.entityType;
-    const chartType = state.chartType;
-    const button = byId("live-refresh");
-    button.disabled = true;
-    button.textContent = "Scanning regions…";
-    setStatus("live-status", `Global chart loaded. Scanning all regions for ${focusedSelectionName()} ${entityTypeName()} charts…`);
-
-    try {
-      const payload = await fetchAllRegionsOverview(cadence, entityType, chartType);
-      if (requestId !== liveRequest || activePage !== "live" || state.cadence !== cadence || state.entityType !== entityType || state.chartType !== chartType) return;
-      state.marketScope = "all";
-      liveOverview = payload;
-      liveKey = currentKey();
-      liveLoadedAt = Date.now();
-      renderLive(payload);
-    } catch (error) {
-      if (requestId === liveRequest && activePage === "live") {
-        setStatus("live-status", `The Global chart is loaded, but the automatic regional scan failed: ${error.message}`, true);
-      }
-    } finally {
-      if (requestId === liveRequest) {
-        isAutoRegionScanning = false;
-        button.disabled = false;
-        updateLiveActionLabel();
-      }
-    }
-  }
-
   async function loadFocusedLive(refresh = false) {
-    isAutoRegionScanning = false;
     const requestId = ++liveRequest;
     byId("live-refresh").disabled = true;
     byId("live-refresh").textContent = state.marketScope === "global" ? "Loading Global…" : "Loading regions…";
     byId("live-results-count").textContent = state.marketScope === "global" ? "Loading Global chart…" : "Scanning all Spotify regions…";
+    byId("live-results").innerHTML = '<p class="focus-empty">Loading chart…</p>';
     setStatus("live-status", state.marketScope === "global"
       ? `Loading ${focusedSelectionName()} ${entityTypeName()} chart for Global…`
       : `Loading ${focusedSelectionName()} ${entityTypeName()} charts across all regions…`);
@@ -277,7 +245,6 @@
         liveKey = currentKey();
         liveLoadedAt = Date.now();
         renderLive(payload);
-        if (payload.marketScope === "global") void loadAllRegionsAutomatically(requestId);
       }
     } catch (error) {
       if (requestId === liveRequest) {
@@ -286,13 +253,19 @@
           renderLive(liveOverview);
           setStatus("live-status", `The full regional scan failed: ${error.message} The Global chart is still shown.`, true);
         } else {
+          const globalChartUnavailable = error.marketDiagnostics?.some(
+            (item) => item.countryCode === "GLOBAL" && item.httpStatus === 404,
+          );
+          const message = globalChartUnavailable
+            ? `${chartTypeName()} is not available as a Global chart. Choose “Load all regions” to check country charts.`
+            : error.message;
           byId("live-results-count").textContent = "Charts unavailable";
-          byId("live-results").innerHTML = `<p class="focus-empty">${escapeHtml(error.message)}</p>`;
-          setStatus("live-status", error.message, true);
+          byId("live-results").innerHTML = `<p class="focus-empty">${escapeHtml(message)}</p>`;
+          setStatus("live-status", message, true);
         }
       }
     } finally {
-      if (requestId === liveRequest && !isAutoRegionScanning) {
+      if (requestId === liveRequest) {
         byId("live-refresh").disabled = false;
         updateLiveActionLabel();
       }

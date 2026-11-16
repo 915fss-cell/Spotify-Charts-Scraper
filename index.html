@@ -223,8 +223,12 @@
             ? detail
             : Array.isArray(detail)
               ? detail.map((item) => item.msg).filter(Boolean).join(" ")
-              : "The request could not be completed.";
-          throw new Error(message || "The request could not be completed.");
+              : typeof detail?.message === "string"
+                ? detail.message
+                : "The request could not be completed.";
+          const error = new Error(message || "The request could not be completed.");
+          error.marketDiagnostics = Array.isArray(detail?.marketDiagnostics) ? detail.marketDiagnostics : [];
+          throw error;
         }
         return payload;
       }
@@ -483,6 +487,6 @@
       Promise.all([loadCountries(), loadStatus()]).catch((error) => showBanner(error.message, true));
     </script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" defer></script>
-    <script src="/selected-pages.js?v=selection-history-diagnostics-3" defer></script>
+    <script src="/selected-pages.js?v=selection-history-diagnostics-4" defer></script>
   </body>
 </html>
