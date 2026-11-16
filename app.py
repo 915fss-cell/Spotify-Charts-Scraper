@@ -22,7 +22,9 @@ from chart_history import (
     close_history_pool,
     entry_entity_uri,
     get_history_pool,
+    parse_chart_date,
     run_durable_history_backfill_batch,
+    save_chart_snapshot,
     snapshot_values,
 )
 from collection_worker import run_collection_tick
@@ -85,6 +87,172 @@ CHART_REFRESH_LEASE_SECONDS = 120
 focused_chart_cache: dict[tuple[str, ...], tuple[float, dict[str, Any]]] = {}
 focused_chart_cache_lock = asyncio.Lock()
 COUNTRY_NAMES = {country.value: country.name.replace("_", " ").title() for country in Countries}
+FOCUSED_HISTORY_CHART_TYPES = set(HISTORY_CHART_TYPES) - {"daily_viral_songs"}
+
+
+def focused_result_cache_key(scope: str, chart_type: str, selection_fingerprint: str) -> str:
+    value = f"{scope}\n{chart_type}\n{selection_fingerprint}"
+    return __import__("hashlib").sha256(value.encode()).hexdigest()
+
+
+def decode_json_value(value: Any) -> Any:
+    return json.loads(value) if isinstance(value, str) else value
+
+
+async def read_focused_result_snapshot(
+    cadence: str, entity_type: str, scope: str, chart_type: str, selection_fingerprint: str
+) -> dict[str, Any] | None:
+    pool = await get_history_pool()
+    row = await pool.fetchrow(
+        """SELECT payload, fetched_at FROM public.spotify_focused_chart_snapshots
+           WHERE cadence=$1 AND entity_type=$2 AND market_scope='all' AND snapshot_date=CURRENT_DATE""",
+        cadence, entity_type,
+    )
+    if not row:
+        return None
+    payload = decode_json_value(row["payload"])
+    results = payload.get("results", []) if isinstance(payload, dict) else []
+    if not isinstance(results, list):
+        results = []
+    cache_key = focused_result_cache_key(scope, chart_type, selection_fingerprint)
+    match = next((item for item in reversed(results) if isinstance(item, dict) and item.get("cacheKey") == cache_key), None)
+    if not match:
+        return None
+    response = dict(match["response"])
+    response.update({
+        "snapshotReused": True,
+        "historyStorageAvailable": True,
+        "historySavedRegions": len(response.get("regions", [])),
+        "snapshotFetchedAt": row["fetched_at"].isoformat() if hasattr(row["fetched_at"], "isoformat") else str(row["fetched_at"]),
+    })
+    return response
+
+
+async def read_legacy_focused_scan(cadence: str, entity_type: str, chart_type: str) -> dict[str, Any] | None:
+    pool = await get_history_pool()
+    row = await pool.fetchrow(
+        """SELECT partial_payload, updated_at,
+                  (SELECT count(*) FROM public.spotify_chart_selections WHERE is_archived = true) AS archived_selections,
+                  (SELECT max(created_at) FROM public.spotify_chart_selections) AS latest_selection_at
+           FROM public.spotify_focused_scan_jobs
+           WHERE cadence=$1 AND entity_type=$2 AND status IN ('complete','partial')
+             AND updated_at::date=CURRENT_DATE""",
+        cadence, entity_type,
+    )
+    if not row or row["archived_selections"] or (
+        row["latest_selection_at"] is not None and row["latest_selection_at"] > row["updated_at"]
+    ):
+        return None
+    response = decode_json_value(row["partial_payload"])
+    if not isinstance(response, dict) or response.get("chartType") != chart_type or response.get("marketScope") != "all":
+        return None
+    return response
+
+
+def focused_response_for_scope(response: dict[str, Any], scope: str) -> dict[str, Any]:
+    result = dict(response)
+    if scope == "all":
+        return result
+    regions = [region for region in response.get("regions", []) if region.get("regionCode") == "GLOBAL"]
+    diagnostics = [item for item in response.get("marketDiagnostics", []) if item.get("countryCode") == "GLOBAL"]
+    releases = []
+    for release in response.get("releases", []):
+        matching_regions = [region for region in release.get("regions", []) if region.get("regionCode") == "GLOBAL"]
+        if matching_regions:
+            releases.append({**release, "regions": matching_regions})
+    failed = [item for item in diagnostics if item.get("status") == "failed"]
+    result.update({
+        "marketScope": "global",
+        "marketsTotal": 1,
+        "marketsScanned": sum(item.get("status") == "succeeded" for item in diagnostics),
+        "matchingRegions": len(regions),
+        "failedRegions": [item.get("countryName", "Global") for item in failed],
+        "marketDiagnostics": diagnostics,
+        "regions": regions,
+        "releases": releases,
+    })
+    return result
+
+
+async def save_focused_result_snapshot(
+    pool: Any,
+    cadence: str,
+    entity_type: str,
+    scope: str,
+    chart_type: str,
+    selection_fingerprint: str,
+    response: dict[str, Any],
+) -> None:
+    cache_key = focused_result_cache_key(scope, chart_type, selection_fingerprint)
+    snapshot = {
+        "cacheKey": cache_key,
+        "scope": scope,
+        "chartType": chart_type,
+        "selectionFingerprint": selection_fingerprint,
+        "response": response,
+    }
+    await pool.execute(
+        """INSERT INTO public.spotify_focused_chart_snapshots
+               (cadence, entity_type, market_scope, snapshot_date, payload, fetched_at)
+           VALUES ($1, $2, 'all', CURRENT_DATE, jsonb_build_object('results', $3::jsonb), now())
+           ON CONFLICT (cadence, entity_type, market_scope, snapshot_date) DO UPDATE
+           SET payload = jsonb_build_object(
+                   'results',
+                   COALESCE((
+                       SELECT jsonb_agg(saved.result)
+                       FROM jsonb_array_elements(
+                           CASE WHEN jsonb_typeof(spotify_focused_chart_snapshots.payload->'results') = 'array'
+                                THEN spotify_focused_chart_snapshots.payload->'results'
+                                ELSE '[]'::jsonb END
+                       ) AS saved(result)
+                       WHERE saved.result->>'cacheKey' <> $4
+                   ), '[]'::jsonb) || (EXCLUDED.payload->'results')
+               ),
+               fetched_at = now()""",
+        cadence, entity_type, json.dumps([snapshot], separators=(",", ":")), cache_key,
+    )
+
+
+async def save_focused_results_to_history(pool: Any, chart_type: str, response: dict[str, Any]) -> int:
+    if chart_type not in FOCUSED_HISTORY_CHART_TYPES:
+        return len(response.get("regions", [])) if chart_type == "daily_viral_songs" else 0
+    saved_regions = set()
+    for region in response.get("regions", []):
+        country_code = region.get("regionCode")
+        if not country_code:
+            continue
+        entries = []
+        for item in region.get("entries", []):
+            uri = item.get("entityUri")
+            entity_type = item.get("entityType")
+            metadata_key, uri_key, name_key = {
+                "track": ("trackMetadata", "trackUri", "trackName"),
+                "artist": ("artistMetadata", "artistUri", "artistName"),
+                "album": ("albumMetadata", "albumUri", "albumName"),
+            }.get(entity_type, (None, None, None))
+            chart_date = parse_chart_date(item.get("chartDate"))
+            if not uri or not metadata_key or chart_date is None:
+                continue
+            metadata = {uri_key: uri, name_key: item.get("entityName") or "Untitled"}
+            artist_names = [name.strip() for name in (item.get("artistNames") or "").split(",") if name.strip()]
+            if artist_names:
+                metadata["artists"] = [{"name": name} for name in artist_names]
+            entries.append({
+                metadata_key: metadata,
+                "chartEntryData": {
+                    "currentRank": item.get("chartRank"),
+                    "previousRank": item.get("previousRank"),
+                    "peakRank": item.get("peakRank"),
+                    "consecutiveAppearancesOnChart": item.get("consecutiveAppearancesOnChart"),
+                    "appearancesOnChart": item.get("appearancesOnChart"),
+                    "entryDate": item.get("entryDate"),
+                    "rankingMetric": {"type": item.get("metricType"), "value": item.get("metricValue")},
+                },
+            })
+        if entries:
+            await save_chart_snapshot(pool, chart_type, country_code, chart_date, entries)
+            saved_regions.add(country_code)
+    return len(saved_regions)
 
 
 def chart_delivery(payload: dict[str, Any], fetched_at: Any, status: str) -> dict[str, Any]:
@@ -1084,8 +1252,12 @@ async def run_focused_scan_and_cache(
     response: dict[str, Any] | None = None
     try:
         response = await scan_focused_live(cadence, entity_type, scope, chart_type)
+        pool = await get_history_pool()
+        await save_focused_result_snapshot(pool, cadence, entity_type, scope, chart_type, cache_key[4], response)
+        response["snapshotSaved"] = True
+        response["historyStorageAvailable"] = True
+        response["historySavedRegions"] = await save_focused_results_to_history(pool, chart_type, response)
         if scope == "all":
-            pool = await get_history_pool()
             failed_markets = [item for item in response["marketDiagnostics"] if item["status"] == "failed"]
             completed_markets = [item["countryCode"] for item in response["marketDiagnostics"] if item["status"] == "succeeded"]
             status = "partial" if failed_markets else "complete"
@@ -1161,6 +1333,43 @@ async def focused_live(
         if refresh:
             focused_chart_cache.pop(cache_key, None)
 
+    try:
+        snapshot = await read_focused_result_snapshot(
+            cadence, entity_type, scope, selected_chart_type, selection_fingerprint
+        )
+    except Exception as error:
+        print(f"[v0] Focused Live snapshot lookup failed: {type(error).__name__}")
+        snapshot = None
+    if snapshot is not None:
+        async with focused_chart_cache_lock:
+            focused_chart_cache[cache_key] = (time.monotonic(), snapshot)
+        return snapshot
+
+    try:
+        previous_scan = await read_legacy_focused_scan(cadence, entity_type, selected_chart_type)
+    except Exception as error:
+        print(f"[v0] Previous focused scan lookup failed: {type(error).__name__}")
+        previous_scan = None
+    if previous_scan is not None:
+        response = focused_response_for_scope(previous_scan, scope)
+        response["snapshotReused"] = True
+        try:
+            pool = await get_history_pool()
+            await save_focused_result_snapshot(
+                pool, cadence, entity_type, scope, selected_chart_type, selection_fingerprint, response
+            )
+            response["snapshotSaved"] = True
+            response["historyStorageAvailable"] = True
+            response["historySavedRegions"] = await save_focused_results_to_history(pool, selected_chart_type, response)
+        except Exception as error:
+            print(f"[v0] Previous focused scan could not be archived: {type(error).__name__}")
+            response["snapshotSaved"] = False
+            response["historyStorageAvailable"] = False
+            response["historySavedRegions"] = 0
+        async with focused_chart_cache_lock:
+            focused_chart_cache[cache_key] = (time.monotonic(), response)
+        return response
+
     if scope == "all":
         async with focused_chart_cache_lock:
             task = focused_chart_scan_tasks.get(cache_key)
@@ -1179,6 +1388,19 @@ async def focused_live(
             return pending_focused_scan(cadence, entity_type, selected_chart_type)
 
     response = await scan_focused_live(cadence, entity_type, scope, selected_chart_type)
+    try:
+        pool = await get_history_pool()
+        await save_focused_result_snapshot(
+            pool, cadence, entity_type, scope, selected_chart_type, selection_fingerprint, response
+        )
+        response["snapshotSaved"] = True
+        response["historyStorageAvailable"] = True
+        response["historySavedRegions"] = await save_focused_results_to_history(pool, selected_chart_type, response)
+    except Exception as error:
+        print(f"[v0] Focused Live snapshot save failed: {type(error).__name__}")
+        response["snapshotSaved"] = False
+        response["historyStorageAvailable"] = False
+        response["historySavedRegions"] = 0
     async with focused_chart_cache_lock:
         focused_chart_cache[cache_key] = (time.monotonic(), response)
     return response
@@ -1352,6 +1574,54 @@ def group_history_points(points: list[dict[str, Any]]) -> tuple[list[dict[str, A
     return release_items, region_items
 
 
+def focused_snapshot_history_points(
+    rows: list[Any], chart_type: str, selection_fingerprint: str
+) -> list[dict[str, Any]]:
+    points_by_key: dict[tuple[str, str, str], tuple[int, dict[str, Any]]] = {}
+    for row in rows:
+        snapshot_date = row["snapshot_date"]
+        snapshot_date_text = snapshot_date.isoformat() if hasattr(snapshot_date, "isoformat") else str(snapshot_date)
+        payload = decode_json_value(row["payload"])
+        results = payload.get("results", []) if isinstance(payload, dict) else []
+        if not isinstance(results, list):
+            continue
+        for saved in results:
+            if not isinstance(saved, dict) or saved.get("chartType") != chart_type or saved.get("selectionFingerprint") != selection_fingerprint:
+                continue
+            scope_priority = 1 if saved.get("scope") == "all" else 0
+            response = saved.get("response") or {}
+            for region in response.get("regions", []):
+                region_code = region.get("regionCode")
+                for item in region.get("entries", []):
+                    entity_uri = item.get("entityUri")
+                    if not region_code or not entity_uri:
+                        continue
+                    chart_day = parse_chart_date(item.get("chartDate")) or parse_chart_date(snapshot_date_text)
+                    if chart_day is None:
+                        continue
+                    point = {
+                        "entityUri": entity_uri,
+                        "entityType": item.get("entityType"),
+                        "entityName": item.get("entityName") or "Untitled",
+                        "artistNames": item.get("artistNames") or "",
+                        "regionCode": region_code,
+                        "regionName": item.get("regionName") or region.get("regionName") or COUNTRY_NAMES.get(region_code, region_code),
+                        "chartDate": chart_day.isoformat(),
+                        "chartRank": item.get("chartRank"),
+                        "previousRank": item.get("previousRank"),
+                        "peakRank": item.get("peakRank"),
+                        "consecutiveAppearancesOnChart": item.get("consecutiveAppearancesOnChart"),
+                        "appearancesOnChart": item.get("appearancesOnChart"),
+                        "entryDate": item.get("entryDate"),
+                        "streamCount": item.get("metricValue") if str(item.get("metricType", "")).upper() == "STREAMS" else None,
+                    }
+                    key = (region_code, entity_uri, chart_day.isoformat())
+                    previous = points_by_key.get(key)
+                    if previous is None or scope_priority > previous[0]:
+                        points_by_key[key] = (scope_priority, point)
+    return [value[1] for value in points_by_key.values()]
+
+
 @app.get("/api/focused/history")
 async def focused_history(
     cadence: Literal["daily", "weekly"] = Query("daily"),
@@ -1422,8 +1692,34 @@ async def focused_history(
         raise HTTPException(status_code=503, detail="Focused chart history is temporarily unavailable.") from error
 
     points = [history_point(row) for row in rows]
-    releases, regions = group_history_points(points)
     total_rows = int(rows[0]["total_rows"]) if rows else 0
+    try:
+        selections = await read_selected_entities()
+        selected_uris = sorted(row["entity_uri"] for row in selections)
+        selection_fingerprint = __import__("hashlib").sha256("\n".join(selected_uris).encode()).hexdigest()
+        focused_rows = await pool.fetch(
+            """SELECT snapshot_date, payload FROM public.spotify_focused_chart_snapshots
+               WHERE cadence=$1 AND entity_type=$2 AND market_scope='all'
+                 AND ($3::date IS NULL OR snapshot_date >= $3::date)
+               ORDER BY snapshot_date""",
+            cadence, entity_type, start_date,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Focused chart history is temporarily unavailable.") from error
+    live_points = focused_snapshot_history_points(focused_rows, chart_type, selection_fingerprint)
+    page_live_points = live_points[offset:offset + limit]
+    merged = {
+        (point["regionCode"], point["entityUri"], point["chartDate"]): point
+        for point in page_live_points
+    }
+    for point in points:
+        merged.setdefault((point["regionCode"], point["entityUri"], point["chartDate"]), point)
+    points = sorted(
+        merged.values(),
+        key=lambda point: (point["regionCode"], point["entityUri"], point["chartDate"]),
+    )[:limit]
+    total_rows = max(total_rows, len(live_points), offset + len(points))
+    releases, regions = group_history_points(points)
     return {
         "artist": {"entityName": "Tracked entities"},
         "cadence": cadence,

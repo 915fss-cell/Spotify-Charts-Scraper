@@ -1,5 +1,6 @@
 import json
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -131,6 +132,147 @@ class LiveSelectionTests(unittest.TestCase):
 
         import asyncio
         asyncio.run(run())
+
+    def test_focused_live_reuses_today_database_snapshot(self):
+        async def run():
+            selections = [{"entity_uri": ARTIST_URI, "entity_type": "artist"}]
+            selection_fingerprint = __import__("hashlib").sha256(ARTIST_URI.encode()).hexdigest()
+            response = {
+                "artist": {"entityName": "Saved selections"},
+                "cadence": "daily",
+                "entityType": "track",
+                "chartType": "daily_top_songs",
+                "marketScope": "all",
+                "marketsScanned": 3,
+                "marketsTotal": 3,
+                "matchingRegions": 1,
+                "regions": [{"regionCode": "US", "regionName": "Usa", "entries": []}],
+                "releases": [],
+                "scanInProgress": False,
+            }
+            saved = {
+                "cacheKey": app.focused_result_cache_key("all", "daily_top_songs", selection_fingerprint),
+                "scope": "all",
+                "chartType": "daily_top_songs",
+                "selectionFingerprint": selection_fingerprint,
+                "response": response,
+            }
+
+            class FakePool:
+                fetchrow = AsyncMock(return_value={
+                    "payload": json.dumps({"results": [saved]}),
+                    "fetched_at": datetime.now(timezone.utc),
+                })
+
+            pool = FakePool()
+            cache_key = ("daily", "track", "all", "daily_top_songs", selection_fingerprint)
+            app.focused_chart_cache.pop(cache_key, None)
+            with patch.object(app, "require_spotify_connection"), \
+                 patch.object(app, "read_selected_entities", new=AsyncMock(return_value=selections)), \
+                 patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), \
+                 patch.object(app, "scan_focused_live", new=AsyncMock(side_effect=AssertionError("Should reuse today's scan"))) as scan:
+                result = await app.focused_live(
+                    cadence="daily", entity_type="track", scope="all", refresh=True, chart_type="daily_top_songs"
+                )
+
+            self.assertTrue(result["snapshotReused"])
+            self.assertEqual(result["regions"][0]["regionCode"], "US")
+            self.assertIn("snapshot_date=CURRENT_DATE", pool.fetchrow.await_args.args[0])
+            scan.assert_not_awaited()
+            app.focused_chart_cache.pop(cache_key, None)
+
+        import asyncio
+        asyncio.run(run())
+
+    def test_focused_live_archives_todays_completed_scan_without_refetching(self):
+        async def run():
+            selections = [{"entity_uri": ARTIST_URI, "entity_type": "artist"}]
+            selection_fingerprint = __import__("hashlib").sha256(ARTIST_URI.encode()).hexdigest()
+            response = {
+                "artist": {"entityName": "Saved selections"},
+                "cadence": "daily",
+                "entityType": "track",
+                "chartType": "daily_top_songs",
+                "marketScope": "all",
+                "marketsScanned": 2,
+                "marketsTotal": 3,
+                "matchingRegions": 1,
+                "marketDiagnostics": [],
+                "regions": [{"regionCode": "CA", "regionName": "Canada", "entries": []}],
+                "releases": [],
+                "scanInProgress": False,
+            }
+
+            class FakePool:
+                fetchrow = AsyncMock(side_effect=[None, {
+                    "partial_payload": json.dumps(response),
+                    "updated_at": datetime.now(timezone.utc),
+                    "archived_selections": 0,
+                    "latest_selection_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                }])
+
+            pool = FakePool()
+            cache_key = ("daily", "track", "all", "daily_top_songs", selection_fingerprint)
+            app.focused_chart_cache.pop(cache_key, None)
+            with patch.object(app, "require_spotify_connection"), \
+                 patch.object(app, "read_selected_entities", new=AsyncMock(return_value=selections)), \
+                 patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), \
+                 patch.object(app, "save_focused_result_snapshot", new=AsyncMock()) as archive, \
+                 patch.object(app, "save_focused_results_to_history", new=AsyncMock(return_value=1)), \
+                 patch.object(app, "scan_focused_live", new=AsyncMock(side_effect=AssertionError("Should reuse today's completed scan"))) as scan:
+                result = await app.focused_live(
+                    cadence="daily", entity_type="track", scope="all", chart_type="daily_top_songs"
+                )
+
+            self.assertTrue(result["snapshotReused"])
+            self.assertEqual(result["regions"][0]["regionCode"], "CA")
+            archive.assert_awaited_once()
+            scan.assert_not_awaited()
+            app.focused_chart_cache.pop(cache_key, None)
+
+        import asyncio
+        asyncio.run(run())
+
+    def test_focused_live_results_are_available_in_history(self):
+        snapshot_date = "2026-11-16"
+        fingerprint = "selection-fingerprint"
+        def saved_result(scope, country):
+            return {
+                "scope": scope,
+                "chartType": "daily_viral_songs",
+                "selectionFingerprint": fingerprint,
+                "response": {
+                    "regions": [{
+                        "regionCode": country,
+                        "regionName": country,
+                        "entries": [{
+                            "entityUri": TRACK_URI,
+                            "entityType": "track",
+                            "entityName": "Example song",
+                            "artistNames": "Saved artist",
+                            "regionName": country,
+                            "chartDate": snapshot_date,
+                            "chartRank": 2,
+                            "metricType": "STREAMS",
+                            "metricValue": "1234",
+                        }],
+                    }],
+                },
+            }
+
+        points = app.focused_snapshot_history_points([{
+            "snapshot_date": snapshot_date,
+            "payload": json.dumps({"results": [
+                saved_result("global", "GLOBAL"),
+                saved_result("all", "GLOBAL"),
+                saved_result("all", "CA"),
+            ]}),
+        }], "daily_viral_songs", fingerprint)
+
+        self.assertEqual({point["regionCode"] for point in points}, {"GLOBAL", "CA"})
+        global_point = next(point for point in points if point["regionCode"] == "GLOBAL")
+        self.assertEqual(global_point["chartRank"], 2)
+        self.assertEqual(global_point["streamCount"], "1234")
 
     def test_chart_explorer_is_browse_only(self):
         async def run():
