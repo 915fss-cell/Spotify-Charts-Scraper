@@ -251,17 +251,24 @@
       && liveOverview.chartType === state.chartType
       && liveOverview.cadence === state.cadence
       && liveOverview.entityType === state.entityType;
+    const preservingLoadedRegions = retryFailed
+      && liveOverview?.marketScope === "all"
+      && liveOverview.chartType === state.chartType
+      && liveOverview.cadence === state.cadence
+      && liveOverview.entityType === state.entityType;
     byId("live-refresh").disabled = true;
     byId("live-refresh").textContent = state.marketScope === "global" ? "Loading Global…" : "Loading regions…";
-    if (!showingGlobalWhileScanning) {
+    if (!showingGlobalWhileScanning && !preservingLoadedRegions) {
       byId("live-results-count").textContent = state.marketScope === "global" ? "Loading Global chart…" : "Scanning all Spotify regions…";
       byId("live-results").innerHTML = '<p class="focus-empty">Loading chart…</p>';
     }
     setStatus("live-status", state.marketScope === "global"
       ? `Loading ${focusedSelectionName()} ${entityTypeName()} chart for Global…`
-      : showingGlobalWhileScanning
-        ? "Global results remain visible while all regions are scanned…"
-        : `Loading ${focusedSelectionName()} ${entityTypeName()} charts across all regions…`);
+      : preservingLoadedRegions
+        ? `Retrying ${liveOverview.failedRegions.length} failed regions. Previously loaded results remain visible.`
+        : showingGlobalWhileScanning
+          ? "Global results remain visible while all regions are scanned…"
+          : `Loading ${focusedSelectionName()} ${entityTypeName()} charts across all regions…`);
     try {
       const payload = state.marketScope === "all"
         ? await fetchAllRegionsOverview(state.cadence, state.entityType, state.chartType, refresh, retryFailed)
