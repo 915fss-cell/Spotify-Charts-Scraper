@@ -45,7 +45,16 @@
   }
 
   function updateLiveActionLabel() {
-    byId("live-refresh").textContent = state.marketScope === "global" ? "Load all regions" : "Refresh all regions";
+    const savedForToday = state.marketScope === "all"
+      && liveOverview?.marketScope === "all"
+      && liveOverview.cadence === state.cadence
+      && liveOverview.entityType === state.entityType
+      && liveOverview.chartType === state.chartType
+      && (liveOverview.snapshotSaved || liveOverview.snapshotReused);
+    byId("live-refresh").textContent = savedForToday
+      ? "Today’s regions saved"
+      : state.marketScope === "global" ? "Load all regions" : "Refresh all regions";
+    byId("live-refresh").disabled = Boolean(savedForToday);
   }
 
   function chartTypeName() {
