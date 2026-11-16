@@ -136,7 +136,7 @@
             <label class="history-schedule-toggle"><input id="collection-enabled" type="checkbox" /> Enable daily collection schedule</label>
   <button class="quiet-button" type="submit">Save schedule</button>
   </form>
-  <p class="schedule-note">Automatic runs also require a Vercel schedule trigger and the project&apos;s <code>CRON_SECRET</code>.</p>
+  <p class="schedule-note">To trigger this schedule, configure cron-job.org to send a GET request to <code>/api/collection/tick</code> every 15 minutes with <code>Authorization: Bearer &lt;CRON_SECRET&gt;</code>. Use your deployed app URL and keep the secret in cron-job.org&apos;s request headers.</p>
           <div class="history-runs-list" id="collection-runs-list" aria-live="polite"></div>
           <nav class="history-pagination" id="collection-runs-pagination" aria-label="Collection run pages" hidden><button class="quiet-button" id="collection-runs-previous" type="button">Previous</button><span id="collection-runs-page-label" aria-live="polite"></span><button class="quiet-button" id="collection-runs-next" type="button">Next</button></nav>
           <div class="chart-head"><span class="chart-title">Chart-date jobs</span><span class="chart-date" id="collection-jobs-page-label">Loading chart-date jobs…</span></div>
