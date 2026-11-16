@@ -231,15 +231,26 @@
 
   async function loadFocusedLive(refresh = false) {
     const requestId = ++liveRequest;
+    const showingGlobalWhileScanning = state.marketScope === "all"
+      && liveOverview?.marketScope === "global"
+      && liveOverview.chartType === state.chartType
+      && liveOverview.cadence === state.cadence
+      && liveOverview.entityType === state.entityType;
     byId("live-refresh").disabled = true;
     byId("live-refresh").textContent = state.marketScope === "global" ? "Loading Global…" : "Loading regions…";
-    byId("live-results-count").textContent = state.marketScope === "global" ? "Loading Global chart…" : "Scanning all Spotify regions…";
-    byId("live-results").innerHTML = '<p class="focus-empty">Loading chart…</p>';
+    if (!showingGlobalWhileScanning) {
+      byId("live-results-count").textContent = state.marketScope === "global" ? "Loading Global chart…" : "Scanning all Spotify regions…";
+      byId("live-results").innerHTML = '<p class="focus-empty">Loading chart…</p>';
+    }
     setStatus("live-status", state.marketScope === "global"
       ? `Loading ${focusedSelectionName()} ${entityTypeName()} chart for Global…`
-      : `Loading ${focusedSelectionName()} ${entityTypeName()} charts across all regions…`);
+      : showingGlobalWhileScanning
+        ? "Global results remain visible while all regions are scanned…"
+        : `Loading ${focusedSelectionName()} ${entityTypeName()} charts across all regions…`);
     try {
-      const payload = await fetchLiveOverview(refresh);
+      const payload = state.marketScope === "all"
+        ? await fetchAllRegionsOverview(state.cadence, state.entityType, state.chartType, refresh)
+        : await fetchLiveOverview(refresh);
       if (requestId === liveRequest && activePage === "live") {
         liveOverview = payload;
         liveKey = currentKey();
