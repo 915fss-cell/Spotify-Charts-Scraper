@@ -55,6 +55,8 @@
       ? "Today’s regions saved"
       : state.marketScope === "global" ? "Load all regions" : "Refresh all regions";
     byId("live-refresh").disabled = Boolean(savedForToday);
+    const retryButton = byId("live-retry-failed");
+    retryButton.hidden = !(state.marketScope === "all" && liveOverview?.failedRegions?.length);
   }
 
   function chartTypeName() {
@@ -211,9 +213,10 @@
   }
 
 
-  async function fetchAllRegionsOverview(cadence, entityType, chartType, refresh = false) {
+  async function fetchAllRegionsOverview(cadence, entityType, chartType, refresh = false, retryFailed = false) {
     const params = new URLSearchParams({ cadence, entity_type: entityType, chart_type: chartType, scope: "all" });
-    let refreshScan = refresh;
+    if (retryFailed) params.set("retry_failed", "true");
+    let refreshScan = refresh && !retryFailed;
     while (true) {
       if (refreshScan) params.set("refresh", "true");
       const payload = await requestJson(`/api/focused/live?${params}`);
@@ -241,7 +244,7 @@
     return requestJson(`/api/focused/live?${params}`);
   }
 
-  async function loadFocusedLive(refresh = false) {
+  async function loadFocusedLive(refresh = false, retryFailed = false) {
     const requestId = ++liveRequest;
     const showingGlobalWhileScanning = state.marketScope === "all"
       && liveOverview?.marketScope === "global"
@@ -261,7 +264,7 @@
         : `Loading ${focusedSelectionName()} ${entityTypeName()} charts across all regions…`);
     try {
       const payload = state.marketScope === "all"
-        ? await fetchAllRegionsOverview(state.cadence, state.entityType, state.chartType, refresh)
+        ? await fetchAllRegionsOverview(state.cadence, state.entityType, state.chartType, refresh, retryFailed)
         : await fetchLiveOverview(refresh);
       if (requestId === liveRequest && activePage === "live") {
         liveOverview = payload;
@@ -751,10 +754,19 @@
     });
   });
 
-  byId("live-refresh").addEventListener("click", () => {
-    state.marketScope = "all";
-    loadFocusedLive(true);
-  });
+    byId("live-refresh").addEventListener("click", () => {
+      state.marketScope = "all";
+      loadFocusedLive(true);
+    });
+    byId("live-retry-failed").addEventListener("click", () => {
+      state.marketScope = "all";
+      byId("live-retry-failed").disabled = true;
+      byId("live-retry-failed").textContent = "Retrying failed regions…";
+      loadFocusedLive(false, true).finally(() => {
+        byId("live-retry-failed").disabled = false;
+        byId("live-retry-failed").textContent = "Retry failed regions";
+      });
+    });
   byId("history-refresh").addEventListener("click", () => loadFocusedHistory(true));
   byId("collection-run-now").addEventListener("click", async () => {
     const button = byId("collection-run-now");
