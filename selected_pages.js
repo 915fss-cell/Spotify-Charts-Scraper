@@ -1042,7 +1042,7 @@
         }),
       });
       byId("collection-next-run").textContent = schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString() : "Schedule disabled";
-      setStatus("selected-history-status", "Collection schedule saved. Automatic triggering must be enabled in the deployment runtime.");
+      setStatus("selected-history-status", "Collection schedule saved. Configure cron-job.org to call /api/collection/tick with the CRON_SECRET authorization header.");
     } catch (error) {
       setStatus("selected-history-status", error.message, true);
     }
