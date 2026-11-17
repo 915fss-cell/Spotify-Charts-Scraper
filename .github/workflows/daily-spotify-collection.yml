@@ -1,0 +1,40 @@
+name: Daily Spotify chart collection
+
+on:
+  schedule:
+    # 09:05 Africa/Algiers (UTC+1); run shortly after the configured collection time.
+    - cron: "5 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-spotify-chart-collection
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger scheduled collection
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CRON_SECRET}" ]]; then
+            echo "::error::Add CRON_SECRET in the repository's Actions secrets."
+            exit 1
+          fi
+
+          response="$(curl --silent --show-error --fail-with-body --max-time 600 \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "https://spotify-charts-scraper.vercel.app/api/collection/tick")"
+          echo "${response}" | jq .
+
+          status="$(echo "${response}" | jq -r '.status // empty')"
+          if [[ "${status}" != "succeeded" ]]; then
+            echo "::error::Collection did not succeed (status: ${status:-missing}). Check that the collection schedule is enabled and due, then inspect this run's response above."
+            exit 1
+          fi
