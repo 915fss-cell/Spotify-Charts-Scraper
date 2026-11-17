@@ -18,6 +18,12 @@
   let historyEntityDetailOffset = 0;
   let collectionRunsOffset = 0;
   let collectionJobsOffset = 0;
+  let historyCalendarYear = null;
+  let historyCalendarMonth = null;
+  let historyCalendarRequest = 0;
+  let selectedHistoryCalendarDate = "";
+  let historyCalendarResultsOffset = 0;
+  let historyCalendarResultsRequest = 0;
   let backfillRunnerActive = false;
   let backfillRunnerTimer = null;
   let backfillRunnerWaiter = null;
@@ -375,6 +381,97 @@
     byId("collection-jobs-next").disabled = !payload.hasMore;
   }
 
+  function renderHistoryCalendar(payload) {
+    historyCalendarYear = payload.year;
+    historyCalendarMonth = payload.month;
+    const monthLabel = new Date(payload.year, payload.month - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    byId("history-calendar-month").textContent = monthLabel;
+    byId("history-calendar-grid").setAttribute("aria-label", `Saved chart data calendar for ${monthLabel}`);
+    const countsByDate = new Map(payload.days.map((day) => [day.chart_date, day]));
+    const firstWeekday = (new Date(payload.year, payload.month - 1, 1).getDay() + 6) % 7;
+    const daysInMonth = new Date(payload.year, payload.month, 0).getDate();
+    const weekdayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+      .map((label) => `<span class="history-calendar-weekday" aria-hidden="true">${label}</span>`).join("");
+    const emptyCells = Array.from({ length: firstWeekday }, () => '<span class="history-calendar-empty-day" aria-hidden="true"></span>').join("");
+    const dateCells = Array.from({ length: daysInMonth }, (_, index) => {
+      const dayNumber = index + 1;
+      const date = `${payload.year}-${String(payload.month).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
+      const saved = countsByDate.get(date);
+      if (!saved) {
+        return `<button class="history-calendar-day" type="button" disabled aria-label="${date}, no saved chart data"><span class="history-calendar-day-number">${dayNumber}</span><span class="history-calendar-day-count">No data</span></button>`;
+      }
+      const count = Number(saved.appearance_count || 0);
+      const level = count <= 50 ? 1 : count <= 500 ? 2 : 3;
+      const labelDate = new Date(payload.year, payload.month - 1, dayNumber).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+      return `<button class="history-calendar-day has-data" type="button" data-history-calendar-date="${date}" data-level="${level}" aria-pressed="${selectedHistoryCalendarDate === date}" aria-label="${labelDate}, ${count.toLocaleString()} saved appearances, ${Number(saved.chart_count || 0)} chart types, ${Number(saved.market_count || 0)} markets"><span class="history-calendar-day-number">${dayNumber}</span><span class="history-calendar-day-count">${count.toLocaleString()} saved</span></button>`;
+    }).join("");
+    byId("history-calendar-grid").innerHTML = weekdayLabels + emptyCells + dateCells;
+    byId("history-calendar-previous").disabled = false;
+    byId("history-calendar-next").disabled = false;
+  }
+
+  async function loadHistoryCalendar(year = historyCalendarYear, month = historyCalendarMonth) {
+    const requestId = ++historyCalendarRequest;
+    const params = new URLSearchParams();
+    if (year && month) {
+      params.set("year", String(year));
+      params.set("month", String(month));
+    }
+    try {
+      const payload = await requestJson(`/api/history/calendar${params.size ? `?${params}` : ""}`);
+      if (requestId !== historyCalendarRequest) return;
+      renderHistoryCalendar(payload);
+    } catch (error) {
+      if (requestId !== historyCalendarRequest) return;
+      byId("history-calendar-month").textContent = "Calendar unavailable";
+      byId("history-calendar-grid").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
+    }
+  }
+
+  async function loadHistoryCalendarDate(date) {
+    selectedHistoryCalendarDate = date;
+    historyCalendarResultsOffset = 0;
+    byId("history-calendar-grid").querySelectorAll("[data-history-calendar-date]").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.historyCalendarDate === date));
+    });
+    await loadHistoryCalendarDateResults();
+  }
+
+  async function loadHistoryCalendarDateResults() {
+    if (!selectedHistoryCalendarDate) return;
+    const requestId = ++historyCalendarResultsRequest;
+    const date = selectedHistoryCalendarDate;
+    const params = new URLSearchParams({
+      chart_date: date,
+      limit: "50",
+      offset: String(historyCalendarResultsOffset),
+    });
+    const resultsPanel = byId("history-calendar-results");
+    resultsPanel.hidden = false;
+    byId("history-calendar-results-title").textContent = new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+    byId("history-calendar-results-count").textContent = "Loading saved charts…";
+    byId("history-calendar-results-list").innerHTML = '<p class="history-calendar-empty">Loading saved chart results…</p>';
+    try {
+      const payload = await requestJson(`/api/history/date?${params}`);
+      if (requestId !== historyCalendarResultsRequest || date !== selectedHistoryCalendarDate) return;
+      const table = payload.items.length ? `<table class="history-calendar-table"><thead><tr><th scope="col">Chart</th><th scope="col">Market</th><th scope="col">Tracked entry</th><th scope="col">Rank</th><th scope="col">Streams</th></tr></thead><tbody>${payload.items.map((item) => `
+        <tr><td>${escapeHtml(item.chart_type.replaceAll("_", " "))}</td><td>${escapeHtml(item.country_code)}</td><td class="history-calendar-item-name"><strong>${escapeHtml(item.track_name || item.track_uri)}</strong>${item.artist_names ? `<small class="history-calendar-item-artist">${escapeHtml(item.artist_names)}</small>` : ""}</td><td>${item.chart_rank == null ? "—" : `#${Number(item.chart_rank).toLocaleString()}`}</td><td>${item.stream_count == null ? "—" : Number(item.stream_count).toLocaleString()}</td></tr>`).join("")}</tbody></table>` : '<p class="history-calendar-empty">No saved chart results were found for this date.</p>';
+      byId("history-calendar-results-list").innerHTML = table;
+      byId("history-calendar-results-count").textContent = `${Number(payload.total).toLocaleString()} saved chart entries`;
+      const pagination = byId("history-calendar-results-pagination");
+      pagination.hidden = payload.total <= 50;
+      byId("history-calendar-results-page-label").textContent = payload.total
+        ? `${historyCalendarResultsOffset + 1}–${historyCalendarResultsOffset + payload.items.length} of ${Number(payload.total).toLocaleString()}`
+        : "No results";
+      byId("history-calendar-results-previous").disabled = historyCalendarResultsOffset === 0;
+      byId("history-calendar-results-next").disabled = !payload.hasMore;
+    } catch (error) {
+      if (requestId !== historyCalendarResultsRequest || date !== selectedHistoryCalendarDate) return;
+      byId("history-calendar-results-count").textContent = "Saved charts unavailable";
+      byId("history-calendar-results-list").innerHTML = `<p class="history-calendar-empty">${escapeHtml(error.message)}</p>`;
+    }
+  }
+
   async function loadHistoryManagement() {
     try {
       const [overview, configs, selections, countries, runs, schedule, backfillQueue] = await Promise.all([
@@ -438,6 +535,7 @@
       byId("collection-timezone").value = schedule.timezone || "Africa/Algiers";
       byId("collection-enabled").checked = Boolean(schedule.enabled);
       void loadHistoryEntities();
+      void loadHistoryCalendar();
       void loadCollectionJobs().catch((error) => {
         byId("collection-jobs-list").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
       });
@@ -779,7 +877,10 @@
         byId("live-retry-failed").textContent = "Retry failed regions";
       });
     });
-  byId("history-refresh").addEventListener("click", () => loadFocusedHistory(true));
+  byId("history-refresh").addEventListener("click", () => {
+    loadFocusedHistory(true);
+    void loadHistoryManagement();
+  });
   byId("collection-run-now").addEventListener("click", async () => {
     const button = byId("collection-run-now");
     button.disabled = true;
@@ -875,6 +976,28 @@
       button.disabled = false;
       setStatus("selected-history-status", error.message, true);
     }
+  });
+  function moveHistoryCalendarMonth(offset) {
+    if (historyCalendarYear == null || historyCalendarMonth == null) return;
+    const next = new Date(historyCalendarYear, historyCalendarMonth - 1 + offset, 1);
+    selectedHistoryCalendarDate = "";
+    byId("history-calendar-results").hidden = true;
+    void loadHistoryCalendar(next.getFullYear(), next.getMonth() + 1);
+  }
+  byId("history-calendar-previous").addEventListener("click", () => moveHistoryCalendarMonth(-1));
+  byId("history-calendar-next").addEventListener("click", () => moveHistoryCalendarMonth(1));
+  byId("history-calendar-grid").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-history-calendar-date]");
+    if (!button) return;
+    void loadHistoryCalendarDate(button.dataset.historyCalendarDate);
+  });
+  byId("history-calendar-results-previous").addEventListener("click", () => {
+    historyCalendarResultsOffset = Math.max(0, historyCalendarResultsOffset - 50);
+    void loadHistoryCalendarDateResults();
+  });
+  byId("history-calendar-results-next").addEventListener("click", () => {
+    historyCalendarResultsOffset += 50;
+    void loadHistoryCalendarDateResults();
   });
   byId("history-entity-detail-previous").addEventListener("click", () => {
     historyEntityDetailOffset = Math.max(0, historyEntityDetailOffset - HISTORY_ENTITY_DETAIL_PAGE_SIZE);

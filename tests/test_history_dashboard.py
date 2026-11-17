@@ -35,6 +35,51 @@ class HistoryPoolStub:
 
 
 class HistoryDashboardTests(unittest.TestCase):
+    def test_history_calendar_serializes_saved_dates(self):
+        async def run():
+            pool = HistoryPoolStub()
+            pool.fetch_rows = [{
+                "chart_date": date(2026, 11, 14),
+                "appearance_count": 87,
+                "chart_count": 2,
+                "market_count": 3,
+            }]
+            with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                app, "require_spotify_connection"
+            ):
+                result = await app.history_calendar(2026, 11)
+            self.assertEqual((result["year"], result["month"]), (2026, 11))
+            self.assertEqual(result["days"][0]["chart_date"], "2026-11-14")
+            self.assertEqual(result["days"][0]["appearance_count"], 87)
+
+        asyncio.run(run())
+
+    def test_history_date_returns_paginated_saved_chart_entries(self):
+        async def run():
+            pool = HistoryPoolStub()
+            pool.fetchval_result = 3
+            pool.fetch_rows = [{
+                "chart_type": "daily_top_songs",
+                "country_code": "GLOBAL",
+                "chart_date": date(2026, 11, 14),
+                "track_uri": "spotify:track:0123456789abcdef",
+                "track_name": "Example song",
+                "artist_names": ["Example artist"],
+                "entity_type": "track",
+                "chart_rank": 1,
+                "stream_count": 1234,
+            }]
+            with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                app, "require_spotify_connection"
+            ):
+                result = await app.history_date_results(date(2026, 11, 14), 1, 1)
+            self.assertEqual(result["total"], 3)
+            self.assertTrue(result["hasMore"])
+            self.assertEqual(result["items"][0]["chart_date"], "2026-11-14")
+            self.assertEqual(result["items"][0]["track_name"], "Example song")
+
+        asyncio.run(run())
+
     def test_entity_list_is_paginated_and_serializes_dates(self):
         async def run():
             pool = HistoryPoolStub()

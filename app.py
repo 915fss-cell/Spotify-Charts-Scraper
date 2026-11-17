@@ -654,6 +654,74 @@ async def save_tracking_config(config: TrackingConfigInput) -> dict[str, Any]:
     return {"saved": saved, "country_count": len(saved)} if country == "ALL" else saved[0]
 
 
+@app.get("/api/history/calendar")
+async def history_calendar(
+    year: int | None = Query(None, ge=1900, le=2100),
+    month: int | None = Query(None, ge=1, le=12),
+) -> dict[str, Any]:
+    require_spotify_connection()
+    if (year is None) != (month is None):
+        raise HTTPException(status_code=400, detail="Choose both a year and month.")
+    pool = await get_history_pool()
+    if year is None or month is None:
+        latest_date = await pool.fetchval("SELECT max(chart_date) FROM public.spotify_chart_snapshots")
+        anchor = latest_date or calendar_date.today()
+        year, month = anchor.year, anchor.month
+    start_date = calendar_date(year, month, 1)
+    end_date = calendar_date(year + 1, 1, 1) if month == 12 else calendar_date(year, month + 1, 1)
+    rows = await pool.fetch(
+        """SELECT chart_date, count(*)::int AS appearance_count,
+                  count(DISTINCT chart_type)::int AS chart_count,
+                  count(DISTINCT country_code)::int AS market_count
+           FROM public.spotify_chart_snapshots
+           WHERE chart_date >= $1 AND chart_date < $2
+           GROUP BY chart_date ORDER BY chart_date""",
+        start_date, end_date,
+    )
+    return {
+        "year": year,
+        "month": month,
+        "days": [
+            {**dict(row), "chart_date": row["chart_date"].isoformat()}
+            for row in rows
+        ],
+    }
+
+
+@app.get("/api/history/date")
+async def history_date_results(
+    chart_date: calendar_date = Query(...),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0, le=100000),
+) -> dict[str, Any]:
+    require_spotify_connection()
+    pool = await get_history_pool()
+    total = int(await pool.fetchval(
+        "SELECT count(*) FROM public.spotify_chart_snapshots WHERE chart_date = $1",
+        chart_date,
+    ) or 0)
+    rows = await pool.fetch(
+        """SELECT chart_type, country_code, chart_date, track_uri, track_name,
+                  artist_names, entity_type, chart_rank, stream_count
+           FROM public.spotify_chart_snapshots
+           WHERE chart_date = $1
+           ORDER BY chart_type, country_code, chart_rank NULLS LAST, track_name, track_uri
+           LIMIT $2 OFFSET $3""",
+        chart_date, limit, offset,
+    )
+    return {
+        "chart_date": chart_date.isoformat(),
+        "items": [
+            {**dict(row), "chart_date": row["chart_date"].isoformat()}
+            for row in rows
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "hasMore": offset + len(rows) < total,
+    }
+
+
 @app.get("/api/history/entities")
 async def history_entities(
     q: str = Query("", max_length=80),
