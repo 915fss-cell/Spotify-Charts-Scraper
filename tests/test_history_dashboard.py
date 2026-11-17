@@ -226,7 +226,7 @@ class HistoryDashboardTests(unittest.TestCase):
                 ))
             self.assertFalse(result["enabled"])
             self.assertIsNone(result["next_run_at"])
-            self.assertEqual(pool.fetchrow.await_args.args[1:], (False, "08:30", "UTC", None))
+            self.assertEqual(pool.fetchrow.await_args.args[1:], (False, app.clock_time(8, 30), "UTC", None))
 
         asyncio.run(run())
 
