@@ -1049,7 +1049,7 @@ async def update_collection_schedule(schedule: CollectionScheduleInput) -> dict[
              next_run_at = EXCLUDED.next_run_at, lease_owner = NULL, lease_expires_at = NULL,
              updated_at = now()
            RETURNING enabled, local_time, timezone, next_run_at""",
-        schedule.enabled, schedule.local_time, schedule.timezone, next_run_at,
+        schedule.enabled, clock_time(hour, minute), schedule.timezone, next_run_at,
     )
     return dict(row)
 
