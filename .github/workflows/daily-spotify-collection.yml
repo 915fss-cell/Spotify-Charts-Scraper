@@ -35,7 +35,16 @@ jobs:
             echo "${response}" | jq .
 
             status="$(echo "${response}" | jq -r '.status // empty')"
-            if [[ "${status}" != "succeeded" ]]; then
+            failed="$(echo "${response}" | jq -r '.failedChartKeys // 0')"
+            if [[ "${failed}" -gt 0 ]]; then
+              rate_limited="$(echo "${response}" | jq '[.summaryError // "" | scan("HTTP 429")] | length')"
+              if [[ "${rate_limited}" -ne "${failed}" ]]; then
+                echo "::error::Collection batch ${batch} did not succeed (status: ${status:-missing}). Inspect this run's response above."
+                exit 1
+              fi
+              echo "::warning::Spotify rate-limited ${failed} chart request(s); waiting before retrying the batch."
+              sleep 120
+            elif [[ "${status}" != "succeeded" && "${status}" != "partial" ]]; then
               echo "::error::Collection batch ${batch} did not succeed (status: ${status:-missing}). Inspect this run's response above."
               exit 1
             fi
