@@ -926,6 +926,8 @@
     });
     byId("history-cadence-control").hidden = isChartHistory;
     byId("history-entity-control").hidden = isChartHistory;
+    byId("history-calendar-card").hidden = isChartHistory;
+    byId("focus-history-calendar").hidden = !isChartHistory;
     activePage = validPage;
     document.querySelectorAll("[data-page-panel]").forEach((panel) => {
       panel.hidden = panel.dataset.pagePanel !== validPage;
