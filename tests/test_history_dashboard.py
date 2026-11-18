@@ -10,6 +10,7 @@ import app
 class HistoryPoolStub:
     def __init__(self):
         self.fetchval_result = 42
+        self.available_years = [2026]
         self.fetch_rows = [
             {
                 "entity_uri": "spotify:track:0123456789abcdef",
@@ -24,7 +25,9 @@ class HistoryPoolStub:
         ]
         self.fetchrow_results = []
 
-    async def fetchval(self, *_args):
+    async def fetchval(self, query, *_args):
+        if "array_agg(available.year" in query:
+            return self.available_years
         return self.fetchval_result
 
     async def fetch(self, *_args):
@@ -50,6 +53,7 @@ class HistoryDashboardTests(unittest.TestCase):
             ):
                 result = await app.history_calendar(2026, 11, None)
             self.assertEqual((result["year"], result["month"]), (2026, 11))
+            self.assertEqual(result["available_years"], [2026])
             self.assertEqual(result["days"][0]["chart_date"], "2026-11-14")
             self.assertEqual(result["days"][0]["appearance_count"], 87)
             self.assertEqual(result["days"][0]["charts"][0]["chart_type"], "daily_top_songs")

@@ -666,6 +666,17 @@ async def history_calendar(
         )
         anchor = latest_date or calendar_date.today()
         year, month = anchor.year, anchor.month
+    available_years = await pool.fetchval(
+        """SELECT COALESCE(array_agg(available.year ORDER BY available.year DESC), ARRAY[]::integer[])
+           FROM (
+             SELECT DISTINCT EXTRACT(YEAR FROM chart_date)::int AS year
+             FROM public.spotify_chart_snapshots
+             WHERE ($1::text IS NULL OR chart_type = $1)
+           ) AS available""",
+        chart_type,
+    )
+    if year not in available_years:
+        available_years = [*available_years, year]
     start_date = calendar_date(year, month, 1)
     end_date = calendar_date(year + 1, 1, 1) if month == 12 else calendar_date(year, month + 1, 1)
     rows = await pool.fetch(
@@ -693,6 +704,7 @@ async def history_calendar(
     return {
         "year": year,
         "month": month,
+        "available_years": available_years,
         "chart_type": chart_type,
         "days": [
             {

@@ -394,9 +394,18 @@
     context.year = payload.year;
     context.month = payload.month;
     const prefix = context.prefix;
-    const monthLabel = new Date(payload.year, payload.month - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    const monthLabel = new Date(payload.year, payload.month - 1, 1).toLocaleDateString(undefined, { month: "long" });
     byId(`${prefix}-calendar-month`).textContent = monthLabel;
-    byId(`${prefix}-calendar-grid`).setAttribute("aria-label", `Saved chart data calendar for ${monthLabel}`);
+    const yearPicker = byId(`${prefix}-calendar-year`);
+    const availableYears = [...new Set((payload.available_years || [payload.year]).map(Number).filter(Number.isInteger))];
+    if (!availableYears.includes(payload.year)) availableYears.push(payload.year);
+    const firstYear = Math.min(2017, ...availableYears);
+    const lastYear = Math.max(new Date().getFullYear(), ...availableYears);
+    const selectableYears = Array.from({ length: lastYear - firstYear + 1 }, (_, index) => lastYear - index);
+    yearPicker.innerHTML = selectableYears.map((year) => `<option value="${year}">${year}</option>`).join("");
+    yearPicker.value = String(payload.year);
+    yearPicker.disabled = false;
+    byId(`${prefix}-calendar-grid`).setAttribute("aria-label", `Saved chart data calendar for ${monthLabel} ${payload.year}`);
     context.daysByDate = new Map(payload.days.map((day) => [day.chart_date, day]));
     const firstWeekday = (new Date(payload.year, payload.month - 1, 1).getDay() + 6) % 7;
     const daysInMonth = new Date(payload.year, payload.month, 0).getDate();
@@ -1096,6 +1105,14 @@
     const prefix = context.prefix;
     byId(`${prefix}-calendar-previous`).addEventListener("click", () => moveHistoryCalendarMonth(context, -1));
     byId(`${prefix}-calendar-next`).addEventListener("click", () => moveHistoryCalendarMonth(context, 1));
+    byId(`${prefix}-calendar-year`).addEventListener("change", (event) => {
+      const year = Number(event.target.value);
+      if (!Number.isInteger(year) || context.month == null) return;
+      context.selectedDate = "";
+      context.resultsOffset = 0;
+      byId(`${prefix}-calendar-results`).hidden = true;
+      void loadHistoryCalendar(context, year, context.month, context.chartType);
+    });
     byId(`${prefix}-calendar-grid`).addEventListener("click", (event) => {
       const button = event.target.closest("[data-history-calendar-date]");
       if (button) void loadHistoryCalendarDate(context, button.dataset.historyCalendarDate);
