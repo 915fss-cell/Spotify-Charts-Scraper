@@ -660,7 +660,7 @@
       byId("history-entities-list").innerHTML = payload.items.length ? payload.items.map((entity) => `
         <div class="history-config-row">
           <div class="history-config-copy"><strong>${escapeHtml(entity.entity_name)} · ${escapeHtml(entity.entity_type)}</strong><span>${Number(entity.appearance_count).toLocaleString()} saved appearances · ${entity.latest_appearance ? `latest ${escapeHtml(entity.latest_appearance)}` : "no saved appearances"} · ${Number(entity.active_configs).toLocaleString()} active configs</span></div>
-          <button class="quiet-button" type="button" data-history-entity="${escapeHtml(entity.entity_uri)}">View detail</button>
+          <button class="quiet-button" type="button" data-history-entity="${escapeHtml(entity.entity_uri)}" aria-expanded="false" aria-controls="history-entity-detail">View detail</button>
         </div>`).join("") : '<p class="history-empty-row">No tracked entities match these filters.</p>';
       const pagination = byId("history-entities-pagination");
       pagination.hidden = payload.total <= HISTORY_ENTITY_PAGE_SIZE;
@@ -1030,6 +1030,21 @@
     historyOffset += HISTORY_PAGE_SIZE;
     loadFocusedHistory();
   });
+  function closeHistoryEntityDetail(restoreFocus = true) {
+    byId("history-entity-detail").hidden = true;
+    if (trackedEntityChart) {
+      trackedEntityChart.destroy();
+      trackedEntityChart = null;
+    }
+    if (historyEntityTrigger?.isConnected) {
+      historyEntityTrigger.textContent = "View detail";
+      historyEntityTrigger.setAttribute("aria-expanded", "false");
+    }
+    historyEntityTrigger = historyEntityTrigger?.isConnected
+      ? historyEntityTrigger
+      : byId("history-entities-list").querySelector("[data-history-entity]");
+    if (restoreFocus) historyEntityTrigger?.focus();
+  }
   byId("history-entity-filter").addEventListener("submit", (event) => {
     event.preventDefault();
     historyEntitiesOffset = 0;
@@ -1046,7 +1061,17 @@
   byId("history-entities-list").addEventListener("click", (event) => {
     const button = event.target.closest("[data-history-entity]");
     if (!button) return;
+    if (historyEntityTrigger === button && !byId("history-entity-detail").hidden) {
+      closeHistoryEntityDetail();
+      return;
+    }
+    if (historyEntityTrigger?.isConnected) {
+      historyEntityTrigger.textContent = "View detail";
+      historyEntityTrigger.setAttribute("aria-expanded", "false");
+    }
     historyEntityTrigger = button;
+    button.textContent = "Close details";
+    button.setAttribute("aria-expanded", "true");
     historyEntityDetailOffset = 0;
     void loadHistoryEntityDetail(button.dataset.historyEntity);
   });
@@ -1143,15 +1168,7 @@
     if (context.resultsChartType) void loadHistoryCalendarDateResults(context, context.resultsChartType);
   });
   byId("history-entity-detail-close").addEventListener("click", () => {
-    byId("history-entity-detail").hidden = true;
-    if (trackedEntityChart) {
-      trackedEntityChart.destroy();
-      trackedEntityChart = null;
-    }
-    historyEntityTrigger = historyEntityTrigger?.isConnected
-      ? historyEntityTrigger
-      : byId("history-entities-list").querySelector("[data-history-entity]");
-    historyEntityTrigger?.focus();
+    closeHistoryEntityDetail();
   });
   byId("tracked-entity-legend").addEventListener("click", (event) => {
     const button = event.target.closest("[data-chart-series]");
