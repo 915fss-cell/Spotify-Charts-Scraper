@@ -92,6 +92,27 @@ async def _retry_claimed_job(
     )
 
 
+async def _mark_latest_chart_unavailable(
+    pool: asyncpg.Pool,
+    chart_type: str,
+    country: str,
+) -> None:
+    await pool.execute(
+        """INSERT INTO public.spotify_chart_refresh_jobs
+             (chart_type, country_code, requested_date, status, next_attempt_at,
+              last_error, last_http_status, completed_at, fetched_at)
+           VALUES ($1, $2, 'latest', 'unavailable', now() + interval '1 day',
+                   'Latest chart is unavailable in this market.', 404, now(), now())
+           ON CONFLICT (chart_type, country_code, requested_date) DO UPDATE SET
+             status = 'unavailable', next_attempt_at = now() + interval '1 day',
+             last_error = EXCLUDED.last_error, last_http_status = 404,
+             lease_owner = NULL, lease_expires_at = NULL,
+             completed_at = now(), fetched_at = now(), updated_at = now()""",
+        chart_type,
+        country,
+    )
+
+
 async def _process_pending_history_jobs(
     pool: asyncpg.Pool,
     scraper: SpotifyCharts,
@@ -228,7 +249,8 @@ async def run_collection_tick(
              AND NOT EXISTS (
                SELECT 1 FROM public.spotify_chart_refresh_jobs j
                WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code
-                 AND j.status IN ('succeeded', 'complete') AND j.fetched_at::date = CURRENT_DATE
+                 AND j.status IN ('succeeded', 'complete', 'unavailable')
+                 AND j.fetched_at::date = CURRENT_DATE
              )
              AND NOT EXISTS (
                SELECT 1 FROM public.spotify_chart_refresh_jobs j
@@ -324,6 +346,11 @@ async def run_collection_tick(
             completed += 1
         except httpx.HTTPStatusError as error:
             http_status = error.response.status_code
+            if requested_date is None and http_status == 404:
+                unavailable += 1
+                await _mark_latest_chart_unavailable(pool, chart_type, country)
+                continue
+
             failed += 1
             message = f"Spotify returned HTTP {http_status}; no date was classified unavailable."
             await _retry_claimed_job(

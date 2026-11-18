@@ -108,8 +108,10 @@ class RunLifecyclePool:
         self.fetch_responses = list(fetch_responses or [])
         self.connection = RunLifecycleConnection(schedule)
         self.executed = []
+        self.fetch_queries = []
 
     async def fetch(self, query, *args):
+        self.fetch_queries.append(query)
         return self.fetch_responses.pop(0) if self.fetch_responses else []
 
     async def fetchrow(self, query, *args):
@@ -461,6 +463,39 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("lease_owner = NULL", query)
         self.assertGreater(args[0], datetime.now(timezone.utc))
         self.assertEqual(args[1], "worker-1")
+
+    async def test_latest_404_is_marked_unavailable_for_the_day(self):
+        config = {
+            "chart_type": "weekly_top_albums",
+            "country_code": "AE",
+            "entity_uris": ["spotify:album:0123456789abcdef"],
+        }
+        pool = RunLifecyclePool(fetch_responses=[[], [config]])
+
+        class Scraper:
+            async def weekly_top_albums(self, country, requested_date):
+                response = httpx.Response(
+                    404,
+                    request=httpx.Request("GET", "https://charts.example.test"),
+                )
+                raise httpx.HTTPStatusError("not found", request=response.request, response=response)
+
+        async def scraper_factory():
+            return Scraper()
+
+        result = await run_collection_tick(pool, scraper_factory, source="manual", max_chart_keys=1)
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["requestedChartKeys"], 1)
+        self.assertEqual(result["unavailableChartKeys"], 1)
+        self.assertEqual(result["failedChartKeys"], 0)
+        self.assertIn("status IN ('succeeded', 'complete', 'unavailable')", pool.fetch_queries[1])
+        unavailable_write = next(
+            (query, args) for query, args in pool.executed
+            if "INSERT INTO public.spotify_chart_refresh_jobs" in query
+        )
+        self.assertIn("'latest', 'unavailable'", unavailable_write[0])
+        self.assertEqual(unavailable_write[1], ("weekly_top_albums", "AE"))
 
     async def test_collection_run_records_partial_success_and_failure(self):
         first_uri = "spotify:track:0123456789abcdef"
