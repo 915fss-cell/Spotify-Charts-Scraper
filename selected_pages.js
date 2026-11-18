@@ -319,7 +319,7 @@
     historyTrendData = null;
     byId("history-chart-card").hidden = true;
     const covers = new Map((liveOverview?.releases || []).map((release) => [release.entityUri, release.imageUrl]));
-    payload.releases.forEach((release) => { release.imageUrl = covers.get(release.entityUri) || null; });
+    payload.releases.forEach((release) => { release.imageUrl = release.imageUrl || covers.get(release.entityUri) || null; });
     byId("history-results-title").textContent = state.view === "release" ? `${focusedSelectionName()} history` : `${focusedSelectionName()} by market`;
     byId("history-results-count").textContent = `${payload.releases.length} entities · ${payload.regions.length} markets · ${Number(payload.totalRows || 0).toLocaleString()} saved appearances`;
     const pagination = byId("history-pagination");
@@ -452,10 +452,12 @@
           entityName: item.track_name || item.track_uri,
           entityType: item.entity_type,
           artistNames: item.artist_names || (item.entity_type === "artist" ? "Artist" : ""),
-          imageUrl: null,
+          imageUrl: item.imageUrl || null,
           regions: [],
         };
         releases.set(item.track_uri, release);
+      } else if (!release.imageUrl && item.imageUrl) {
+        release.imageUrl = item.imageUrl;
       }
       release.regions.push({
         entityUri: item.track_uri,
@@ -518,7 +520,7 @@
       let itemCount;
       if (isFocused) {
         const covers = new Map((liveOverview?.releases || []).map((release) => [release.entityUri, release.imageUrl]));
-        payload.releases.forEach((release) => { release.imageUrl = covers.get(release.entityUri) || null; });
+        payload.releases.forEach((release) => { release.imageUrl = release.imageUrl || covers.get(release.entityUri) || null; });
         renderResultCards(`${prefix}-calendar-results-list`, payload.releases, payload.regions, true);
         total = Number(payload.totalRows || 0);
         itemCount = Number(payload.snapshotRows || 0);

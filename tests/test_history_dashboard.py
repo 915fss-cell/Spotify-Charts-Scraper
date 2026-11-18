@@ -75,6 +75,7 @@ class HistoryDashboardTests(unittest.TestCase):
                 "appearances": 7,
                 "entry_date": date(2026, 11, 10),
                 "stream_count": 1234,
+                "image_url": "https://i.scdn.co/image/example-cover",
             }]
             with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
                 app, "require_spotify_connection"
@@ -84,6 +85,7 @@ class HistoryDashboardTests(unittest.TestCase):
             self.assertTrue(result["hasMore"])
             self.assertEqual(result["items"][0]["chart_date"], "2026-11-14")
             self.assertEqual(result["items"][0]["track_name"], "Example song")
+            self.assertEqual(result["items"][0]["imageUrl"], "https://i.scdn.co/image/example-cover")
 
         asyncio.run(run())
 
@@ -104,6 +106,7 @@ class HistoryDashboardTests(unittest.TestCase):
                 "appearances": 7,
                 "entry_date": selected_date,
                 "stream_count": 1234,
+                "image_url": "https://i.scdn.co/image/example-cover",
                 "total_rows": 1,
             }
 
@@ -131,6 +134,7 @@ class HistoryDashboardTests(unittest.TestCase):
             self.assertEqual(pool.fetch_calls[0][1][4], selected_date)
             self.assertEqual(result["chartDate"], "2026-11-14")
             self.assertEqual(result["releases"][0]["regions"][0]["chartDate"], "2026-11-14")
+            self.assertEqual(result["releases"][0]["imageUrl"], "https://i.scdn.co/image/example-cover")
 
         asyncio.run(run())
 
