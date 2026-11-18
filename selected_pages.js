@@ -706,6 +706,9 @@
       const hasValues = items.some((item) => valueFor(item) != null);
       const canvas = byId("tracked-entity-chart");
       const empty = byId("tracked-entity-chart-empty");
+      const legend = byId("tracked-entity-legend");
+      legend.replaceChildren();
+      legend.hidden = true;
       if (trackedEntityChart) {
         trackedEntityChart.destroy();
         trackedEntityChart = null;
@@ -724,8 +727,10 @@
         trackedEntityChart = new window.Chart(canvas.getContext("2d"), {
           type: "line",
           data: { labels, datasets },
-          options: { responsive: true, maintainAspectRatio: false, interaction: { intersect: false, mode: "index" }, plugins: { legend: { display: series.length > 1, position: "bottom" } }, scales: { y: { reverse: metric === "rank", beginAtZero: metric !== "rank" }, x: { ticks: { maxTicksLimit: 8 } } } },
+          options: { responsive: true, maintainAspectRatio: false, interaction: { intersect: false, mode: "index" }, plugins: { legend: { display: false } }, scales: { y: { reverse: metric === "rank", beginAtZero: metric !== "rank" }, x: { ticks: { maxTicksLimit: 8 } } } },
         });
+        legend.innerHTML = datasets.map((dataset, index) => `<button type="button" data-chart-series="${index}" aria-pressed="true"><span class="tracked-entity-legend-swatch" style="--series-color:${dataset.borderColor}"></span><span class="tracked-entity-legend-label">${escapeHtml(dataset.label)}</span></button>`).join("");
+        legend.hidden = datasets.length === 0;
       }
       byId("history-entity-points").innerHTML = payload.items.length ? payload.items.map((item) => `<div class="history-entity-point"><strong>${escapeHtml(item.chart_date)}</strong><span>${escapeHtml(item.country_code)}</span><span>${escapeHtml(item.chart_type.replaceAll("_", " "))}</span><span>#${escapeHtml(item.chart_rank ?? "—")} · ${item.stream_count == null ? "—" : Number(item.stream_count).toLocaleString()} streams</span></div>`).join("") : '<p class="history-empty-row">No saved chart history matches these filters.</p>';
       const pagination = byId("history-entity-detail-pagination");
@@ -1134,6 +1139,15 @@
     context.resultsOffset = 0;
     context.resultsChartType = event.target.value || null;
     if (context.resultsChartType) void loadHistoryCalendarDateResults(context, context.resultsChartType);
+  });
+  byId("tracked-entity-legend").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-chart-series]");
+    if (!button || !trackedEntityChart) return;
+    const index = Number(button.dataset.chartSeries);
+    const visible = trackedEntityChart.isDatasetVisible(index);
+    trackedEntityChart.setDatasetVisibility(index, !visible);
+    button.setAttribute("aria-pressed", String(!visible));
+    trackedEntityChart.update();
   });
   byId("history-entity-detail-previous").addEventListener("click", () => {
     historyEntityDetailOffset = Math.max(0, historyEntityDetailOffset - HISTORY_ENTITY_DETAIL_PAGE_SIZE);
