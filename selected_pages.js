@@ -16,6 +16,7 @@
   let historyOffset = 0;
   let historyEntitiesOffset = 0;
   let historyEntityDetailOffset = 0;
+  let historyEntityTrigger = null;
   let collectionRunsOffset = 0;
   let collectionJobsOffset = 0;
   const historyCalendarContexts = {
@@ -1045,6 +1046,7 @@
   byId("history-entities-list").addEventListener("click", (event) => {
     const button = event.target.closest("[data-history-entity]");
     if (!button) return;
+    historyEntityTrigger = button;
     historyEntityDetailOffset = 0;
     void loadHistoryEntityDetail(button.dataset.historyEntity);
   });
@@ -1139,6 +1141,17 @@
     context.resultsOffset = 0;
     context.resultsChartType = event.target.value || null;
     if (context.resultsChartType) void loadHistoryCalendarDateResults(context, context.resultsChartType);
+  });
+  byId("history-entity-detail-close").addEventListener("click", () => {
+    byId("history-entity-detail").hidden = true;
+    if (trackedEntityChart) {
+      trackedEntityChart.destroy();
+      trackedEntityChart = null;
+    }
+    historyEntityTrigger = historyEntityTrigger?.isConnected
+      ? historyEntityTrigger
+      : byId("history-entities-list").querySelector("[data-history-entity]");
+    historyEntityTrigger?.focus();
   });
   byId("tracked-entity-legend").addEventListener("click", (event) => {
     const button = event.target.closest("[data-chart-series]");
