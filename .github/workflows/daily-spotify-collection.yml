@@ -13,7 +13,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
     steps:
       - name: Run collection from GitHub Actions
         env:
@@ -25,14 +25,24 @@ jobs:
             exit 1
           fi
 
-          response="$(curl --silent --show-error --fail-with-body --max-time 600 \
-            --request POST \
-            --header "Authorization: Bearer ${CRON_SECRET}" \
-            "https://spotify-charts-scraper.vercel.app/api/collection/workflow")"
-          echo "${response}" | jq .
+          batch=0
+          while true; do
+            batch=$((batch + 1))
+            response="$(curl --silent --show-error --fail-with-body --max-time 600 \
+              --request POST \
+              --header "Authorization: Bearer ${CRON_SECRET}" \
+              "https://spotify-charts-scraper.vercel.app/api/collection/workflow")"
+            echo "${response}" | jq .
 
-          status="$(echo "${response}" | jq -r '.status // empty')"
-          if [[ "${status}" != "succeeded" ]]; then
-            echo "::error::Collection did not succeed (status: ${status:-missing}). Inspect this run's response above."
-            exit 1
-          fi
+            status="$(echo "${response}" | jq -r '.status // empty')"
+            if [[ "${status}" != "succeeded" ]]; then
+              echo "::error::Collection batch ${batch} did not succeed (status: ${status:-missing}). Inspect this run's response above."
+              exit 1
+            fi
+
+            requested="$(echo "${response}" | jq -r '.requestedChartKeys // 0')"
+            if [[ "${requested}" == "0" ]]; then
+              echo "All eligible chart and market combinations have been processed."
+              break
+            fi
+          done
