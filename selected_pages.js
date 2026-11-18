@@ -514,6 +514,7 @@
       };
       entitySelect.onchange = setChartOptions;
       setChartOptions();
+      byId("tracking-config-count").textContent = `${configs.length.toLocaleString()} configurations`;
       byId("tracking-config-list").innerHTML = configs.length ? configs.map((config) => `
         <div class="history-config-row">
           <div class="history-config-copy"><strong>${escapeHtml(config.entity_name)} · ${escapeHtml(config.chart_type.replaceAll("_", " "))}</strong><span>${escapeHtml(config.country_code)} · ${config.backfill_start_date ? `from ${escapeHtml(config.backfill_start_date)}` : "start date not set"} · ${config.enabled ? "Active" : "Paused"}</span></div>
