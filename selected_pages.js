@@ -930,6 +930,7 @@
     byId("history-entity-control").hidden = isChartHistory;
     byId("history-calendar-card").hidden = isChartHistory;
     byId("focus-history-calendar").hidden = !isChartHistory;
+    byId("focused-history-results").hidden = !isChartHistory;
     activePage = validPage;
     document.querySelectorAll("[data-page-panel]").forEach((panel) => {
       panel.hidden = panel.dataset.pagePanel !== validPage;

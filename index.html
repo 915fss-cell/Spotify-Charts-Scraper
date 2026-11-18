@@ -243,13 +243,15 @@
             </nav>
           </section>
         </section>
-        <p class="page-status" id="selected-history-status" role="status" aria-live="polite">Loading saved chart snapshots…</p>
-        <div class="focus-results-head"><h2 id="history-results-title">Selected chart history</h2><span class="focus-results-meta" id="history-results-count">Loading snapshots…</span></div>
-        <div class="focus-card-grid" id="history-results" aria-live="polite"></div>
-        <nav class="history-pagination" id="history-pagination" aria-label="History result pages" hidden><button class="quiet-button" id="history-page-previous" type="button">Previous</button><span id="history-page-label" aria-live="polite"></span><button class="quiet-button" id="history-page-next" type="button">Next</button></nav>
-        <section class="chart-card history-chart-card" id="history-chart-card" aria-labelledby="history-chart-title" hidden>
-          <div class="chart-head"><span class="chart-title" id="history-chart-title">Selected chart history by region</span><span class="chart-date" id="history-chart-range">Choose a release to view its trend</span></div>
-          <div class="history-chart-wrap"><canvas id="history-chart" role="img" aria-label="Historical chart metrics by region for the selected release" hidden></canvas><p id="history-empty" class="history-empty">Choose a release below to compare its chart history across regions.</p></div>
+        <section class="focused-history-results" id="focused-history-results" aria-labelledby="history-results-title">
+          <p class="page-status" id="selected-history-status" role="status" aria-live="polite">Loading saved chart snapshots…</p>
+          <div class="focus-results-head"><h2 id="history-results-title">Selected chart history</h2><span class="focus-results-meta" id="history-results-count">Loading snapshots…</span></div>
+          <div class="focus-card-grid" id="history-results" aria-live="polite"></div>
+          <nav class="history-pagination" id="history-pagination" aria-label="History result pages" hidden><button class="quiet-button" id="history-page-previous" type="button">Previous</button><span id="history-page-label" aria-live="polite"></span><button class="quiet-button" id="history-page-next" type="button">Next</button></nav>
+          <section class="chart-card history-chart-card" id="history-chart-card" aria-labelledby="history-chart-title" hidden>
+            <div class="chart-head"><span class="chart-title" id="history-chart-title">Selected chart history by region</span><span class="chart-date" id="history-chart-range">Choose a release to view its trend</span></div>
+            <div class="history-chart-wrap"><canvas id="history-chart" role="img" aria-label="Historical chart metrics by region for the selected release" hidden></canvas><p id="history-empty" class="history-empty">Choose a release below to compare its chart history across regions.</p></div>
+          </section>
         </section>
       </main>
     </div>
