@@ -651,31 +651,55 @@ async def save_tracking_config(config: TrackingConfigInput) -> dict[str, Any]:
 async def history_calendar(
     year: int | None = Query(None, ge=1900, le=2100),
     month: int | None = Query(None, ge=1, le=12),
+    chart_type: str | None = Query(None),
 ) -> dict[str, Any]:
     require_spotify_connection()
     if (year is None) != (month is None):
         raise HTTPException(status_code=400, detail="Choose both a year and month.")
+    if chart_type is not None and chart_type not in HISTORY_CHART_TYPES:
+        raise HTTPException(status_code=400, detail="Choose a supported chart type.")
     pool = await get_history_pool()
     if year is None or month is None:
-        latest_date = await pool.fetchval("SELECT max(chart_date) FROM public.spotify_chart_snapshots")
+        latest_date = await pool.fetchval(
+            "SELECT max(chart_date) FROM public.spotify_chart_snapshots WHERE ($1::text IS NULL OR chart_type = $1)",
+            chart_type,
+        )
         anchor = latest_date or calendar_date.today()
         year, month = anchor.year, anchor.month
     start_date = calendar_date(year, month, 1)
     end_date = calendar_date(year + 1, 1, 1) if month == 12 else calendar_date(year, month + 1, 1)
     rows = await pool.fetch(
-        """SELECT chart_date, count(*)::int AS appearance_count,
-                  count(DISTINCT chart_type)::int AS chart_count,
-                  count(DISTINCT country_code)::int AS market_count
-           FROM public.spotify_chart_snapshots
-           WHERE chart_date >= $1 AND chart_date < $2
-           GROUP BY chart_date ORDER BY chart_date""",
-        start_date, end_date,
+        """WITH typed_days AS (
+             SELECT chart_date, chart_type, count(*)::int AS appearance_count
+             FROM public.spotify_chart_snapshots
+             WHERE chart_date >= $1 AND chart_date < $2
+               AND ($3::text IS NULL OR chart_type = $3)
+             GROUP BY chart_date, chart_type
+           )
+           SELECT typed_days.chart_date, sum(typed_days.appearance_count)::int AS appearance_count,
+                  count(*)::int AS chart_count,
+                  (SELECT count(DISTINCT country_code)::int
+                   FROM public.spotify_chart_snapshots snapshot
+                   WHERE snapshot.chart_date = typed_days.chart_date
+                     AND ($3::text IS NULL OR snapshot.chart_type = $3)) AS market_count,
+                  jsonb_agg(jsonb_build_object(
+                    'chart_type', typed_days.chart_type,
+                    'appearance_count', typed_days.appearance_count
+                  ) ORDER BY typed_days.chart_type) AS charts
+           FROM typed_days
+           GROUP BY typed_days.chart_date ORDER BY typed_days.chart_date""",
+        start_date, end_date, chart_type,
     )
     return {
         "year": year,
         "month": month,
+        "chart_type": chart_type,
         "days": [
-            {**dict(row), "chart_date": row["chart_date"].isoformat()}
+            {
+                **dict(row),
+                "chart_date": row["chart_date"].isoformat(),
+                "charts": decode_json_value(row["charts"]),
+            }
             for row in rows
         ],
     }
@@ -686,26 +710,37 @@ async def history_date_results(
     chart_date: calendar_date = Query(...),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0, le=100000),
+    chart_type: str | None = Query(None),
 ) -> dict[str, Any]:
     require_spotify_connection()
+    if chart_type is not None and chart_type not in HISTORY_CHART_TYPES:
+        raise HTTPException(status_code=400, detail="Choose a supported chart type.")
     pool = await get_history_pool()
     total = int(await pool.fetchval(
-        "SELECT count(*) FROM public.spotify_chart_snapshots WHERE chart_date = $1",
-        chart_date,
+        """SELECT count(*) FROM public.spotify_chart_snapshots
+           WHERE chart_date = $1 AND ($2::text IS NULL OR chart_type = $2)""",
+        chart_date, chart_type,
     ) or 0)
     rows = await pool.fetch(
         """SELECT chart_type, country_code, chart_date, track_uri, track_name,
-                  artist_names, entity_type, chart_rank, stream_count
+                  artist_names, entity_type, chart_rank, previous_rank, peak_rank,
+                  consecutive_appearances, appearances, entry_date, stream_count
            FROM public.spotify_chart_snapshots
-           WHERE chart_date = $1
-           ORDER BY chart_type, country_code, chart_rank NULLS LAST, track_name, track_uri
-           LIMIT $2 OFFSET $3""",
-        chart_date, limit, offset,
+           WHERE chart_date = $1 AND ($2::text IS NULL OR chart_type = $2)
+           ORDER BY country_code, chart_rank NULLS LAST, track_name, track_uri
+           LIMIT $3 OFFSET $4""",
+        chart_date, chart_type, limit, offset,
     )
     return {
         "chart_date": chart_date.isoformat(),
+        "chart_type": chart_type,
         "items": [
-            {**dict(row), "chart_date": row["chart_date"].isoformat()}
+            {
+                **dict(row),
+                "chart_date": row["chart_date"].isoformat(),
+                "entry_date": row["entry_date"].isoformat() if row["entry_date"] else None,
+                "country_name": COUNTRY_NAMES.get(row["country_code"], row["country_code"]),
+            }
             for row in rows
         ],
         "total": total,
@@ -959,7 +994,7 @@ async def collection_jobs(
     for row in rows:
         item = dict(row)
         for field in ("chart_date", "next_attempt_at", "updated_at"):
-            if item.get(field) is not None:
+            if hasattr(item.get(field), "isoformat"):
                 item[field] = item[field].isoformat()
         items.append(item)
     return {"items": items, "total": total, "limit": limit, "offset": offset, "hasMore": offset + len(items) < total}
@@ -1692,6 +1727,7 @@ async def focused_history(
     cadence: Literal["daily", "weekly"] = Query("daily"),
     entity_type: Literal["track", "artist", "album"] = Query("track"),
     chart_type: str | None = Query(None),
+    chart_date: calendar_date | None = Query(None),
     range: str = Query("90", min_length=1, max_length=10),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0, le=1000000),
@@ -1700,7 +1736,7 @@ async def focused_history(
     chart_type = chart_type or default_chart_type
     if chart_type not in HISTORY_CHART_TYPES or HISTORY_CHART_TYPES[chart_type] != entity_type:
         raise HTTPException(status_code=400, detail="Choose a supported chart for this History view.")
-    start_date = history_start_date(range)
+    start_date = history_start_date(range) if chart_date is None else None
     market_codes = [country.value for country in Countries]
     try:
         pool = await get_history_pool()
@@ -1714,6 +1750,7 @@ async def focused_history(
                 FROM public.spotify_chart_snapshots
                 WHERE chart_type = $1 AND entity_type = $2 AND country_code = ANY($3::text[])
                   AND ($4::date IS NULL OR chart_date >= $4::date)
+                  AND ($5::date IS NULL OR chart_date = $5::date)
                   AND (
                       EXISTS (
                           SELECT 1 FROM public.spotify_chart_selections s
@@ -1744,12 +1781,13 @@ async def focused_history(
                 ORDER BY country_code, track_uri, chart_date DESC, fetched_at DESC
             )
             SELECT *, count(*) OVER() AS total_rows FROM latest_per_market
-            ORDER BY country_code, track_uri LIMIT $5 OFFSET $6
+            ORDER BY country_code, track_uri LIMIT $6 OFFSET $7
             """,
             chart_type,
             entity_type,
             market_codes,
             start_date,
+            chart_date,
             limit,
             offset,
         )
@@ -1772,6 +1810,9 @@ async def focused_history(
     except Exception as error:
         raise HTTPException(status_code=503, detail="Focused chart history is temporarily unavailable.") from error
     live_points = focused_snapshot_history_points(focused_rows, chart_type, selection_fingerprint)
+    if chart_date is not None:
+        selected_day = chart_date.isoformat()
+        live_points = [point for point in live_points if point["chartDate"] == selected_day]
     page_live_points = live_points[offset:offset + limit]
     merged = {
         (point["regionCode"], point["entityUri"], point["chartDate"]): point
@@ -1791,6 +1832,7 @@ async def focused_history(
         "entityType": entity_type,
         "chartType": chart_type,
         "range": range,
+        "chartDate": chart_date.isoformat() if chart_date else None,
         "snapshotRows": len(points),
         "totalRows": total_rows,
         "limit": limit,

@@ -53,6 +53,8 @@
       .history-calendar-card{display:flex;flex-direction:column;gap:16px;margin:18px 0;padding:20px}.history-calendar-head{align-items:flex-start}.history-calendar-description{margin:5px 0 0;color:var(--muted);font-size:12px}.history-calendar-navigation{display:flex;align-items:center;gap:10px}.history-calendar-navigation strong{min-width:150px;text-align:center;font:600 16px "Space Grotesk",sans-serif}.history-calendar-legend{display:flex;align-items:center;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:11px}.history-calendar-legend span{display:inline-flex;align-items:center;gap:6px}.history-calendar-swatch{width:12px;height:12px;border-radius:4px;background:#e8f3eb}.history-calendar-swatch.level-2{background:#a8d7b5}.history-calendar-swatch.level-3{background:#18864b}.history-calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}.history-calendar-weekday{padding:7px 4px;color:var(--muted);font-size:10px;font-weight:700;text-align:center;text-transform:uppercase;letter-spacing:.6px}.history-calendar-day{position:relative;display:flex;min-height:76px;flex-direction:column;align-items:flex-start;justify-content:space-between;gap:6px;padding:9px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--text);text-align:left}.history-calendar-day:disabled{background:#fafbfc;color:#667085;cursor:default}.history-calendar-day.has-data{border-color:#d4e8da;background:#e8f3eb;cursor:pointer}.history-calendar-day.has-data[data-level="2"]{border-color:#a8d7b5;background:#a8d7b5}.history-calendar-day.has-data[data-level="3"]{border-color:#18864b;background:#18864b;color:#fff}.history-calendar-day.has-data:hover{filter:brightness(.96)}.history-calendar-day[aria-pressed="true"]{outline:2px solid #142033;outline-offset:2px}.history-calendar-day-number{font:600 14px "Space Grotesk",sans-serif}.history-calendar-day-count{font-size:10px;font-weight:600;line-height:1.25}.history-calendar-day[disabled] .history-calendar-day-count{visibility:hidden}.history-calendar-empty-day{min-height:1px}.history-calendar-results{padding-top:14px;border-top:1px solid var(--line)}.history-calendar-results[hidden]{display:none}.history-calendar-scroll-hint{display:none;color:var(--muted);font-size:10px}.history-calendar-table-wrap{overflow-x:auto}.history-calendar-table{width:100%;min-width:720px;border-collapse:collapse;font-size:12px}.history-calendar-table th,.history-calendar-table td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}.history-calendar-table th{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px}.history-calendar-item-name{max-width:420px;overflow:hidden;text-overflow:ellipsis}.history-calendar-item-name strong,.history-calendar-item-artist{display:block;overflow:hidden;text-overflow:ellipsis}.history-calendar-item-artist{margin-top:3px;color:var(--muted);font-size:10px}.history-calendar-empty{padding:22px;color:var(--muted);font-size:12px;text-align:center}
       @media(max-width:760px){.history-calendar-head{flex-direction:column;gap:12px}.history-calendar-navigation{width:100%;justify-content:space-between}.history-calendar-navigation strong{min-width:0}.history-calendar-day{min-height:60px;padding:7px}.history-calendar-day-count{font-size:9px}.history-calendar-scroll-hint{display:block;margin:0 0 8px}}
       @media(max-width:480px){.history-calendar-grid{gap:3px}.history-calendar-day{min-height:52px;padding:5px;border-radius:7px}.history-calendar-day-count{font-size:8px}.history-calendar-legend{gap:9px}.history-calendar-legend span{font-size:10px}.history-calendar-card{padding:14px}.history-calendar-table th,.history-calendar-table td{padding:8px}}
+      .history-calendar-chart-picker{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:600}.history-calendar-chart-picker select{min-height:38px;max-width:min(320px,55vw);padding:0 10px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--text)}.history-calendar-chart-picker select:disabled{opacity:.55}.focused-history-calendar{margin:18px 0 24px}.history-calendar-results .focus-card-grid{margin-top:14px}
+      @media(max-width:760px){.history-calendar-chart-picker{align-items:flex-start;flex-direction:column}.history-calendar-chart-picker select{max-width:100%;width:100%}}
     </style>
   </head>
   <body>
@@ -169,9 +171,8 @@
           </div>
           <div class="history-calendar-grid" id="history-calendar-grid" role="grid" aria-label="Saved chart data calendar"></div>
           <section class="history-calendar-results" id="history-calendar-results" aria-labelledby="history-calendar-results-title" hidden>
-            <div class="chart-head"><span class="chart-title" id="history-calendar-results-title">Saved results</span><span class="chart-date" id="history-calendar-results-count"></span></div>
-            <p class="history-calendar-scroll-hint">Swipe or scroll horizontally to see all result columns.</p>
-            <div class="history-calendar-table-wrap" id="history-calendar-results-list" aria-live="polite"></div>
+            <div class="chart-head"><span class="chart-title" id="history-calendar-results-title">Saved results</span><label class="history-calendar-chart-picker" for="history-calendar-chart">Chart<select id="history-calendar-chart" disabled><option value="">Choose a chart</option></select></label><span class="chart-date" id="history-calendar-results-count"></span></div>
+            <div class="focus-card-grid" id="history-calendar-results-list" aria-live="polite"></div>
             <nav class="history-pagination" id="history-calendar-results-pagination" aria-label="Saved chart results pages" hidden>
               <button class="quiet-button" id="history-calendar-results-previous" type="button">Previous</button>
               <span id="history-calendar-results-page-label" aria-live="polite"></span>
@@ -211,6 +212,31 @@
             <div class="field focus-history-metric"><label for="history-metric">Trend metric</label><select id="history-metric"><option value="streams">Chart streams</option><option value="rank">Chart rank</option></select></div>
           </div>
         </div>
+        <section class="chart-card history-calendar-card focused-history-calendar" aria-labelledby="focus-history-calendar-title">
+          <div class="chart-head history-calendar-head">
+            <div><span class="chart-title" id="focus-history-calendar-title">Saved dates for this chart</span><p class="history-calendar-description">Choose a date to view this chart&apos;s saved results.</p></div>
+            <div class="history-calendar-navigation" aria-label="Chart calendar month navigation">
+              <button class="quiet-button" id="focus-history-calendar-previous" type="button" aria-label="Previous month">Previous</button>
+              <strong id="focus-history-calendar-month" aria-live="polite">Loading calendar…</strong>
+              <button class="quiet-button" id="focus-history-calendar-next" type="button" aria-label="Next month">Next</button>
+            </div>
+          </div>
+          <div class="history-calendar-legend" aria-label="Saved data volume legend">
+            <span><i class="history-calendar-swatch level-1" aria-hidden="true"></i>Some saved entries</span>
+            <span><i class="history-calendar-swatch level-2" aria-hidden="true"></i>More entries</span>
+            <span><i class="history-calendar-swatch level-3" aria-hidden="true"></i>Many entries</span>
+          </div>
+          <div class="history-calendar-grid" id="focus-history-calendar-grid" role="grid" aria-label="Chart history calendar"></div>
+          <section class="history-calendar-results" id="focus-history-calendar-results" aria-labelledby="focus-history-calendar-results-title" hidden>
+            <div class="chart-head"><span class="chart-title" id="focus-history-calendar-results-title">Saved chart results</span><span class="chart-date" id="focus-history-calendar-results-count"></span></div>
+            <div class="focus-card-grid" id="focus-history-calendar-results-list" aria-live="polite"></div>
+            <nav class="history-pagination" id="focus-history-calendar-results-pagination" aria-label="Chart history result pages" hidden>
+              <button class="quiet-button" id="focus-history-calendar-results-previous" type="button">Previous</button>
+              <span id="focus-history-calendar-results-page-label" aria-live="polite"></span>
+              <button class="quiet-button" id="focus-history-calendar-results-next" type="button">Next</button>
+            </nav>
+          </section>
+        </section>
         <p class="page-status" id="selected-history-status" role="status" aria-live="polite">Loading saved chart snapshots…</p>
         <div class="focus-results-head"><h2 id="history-results-title">Selected chart history</h2><span class="focus-results-meta" id="history-results-count">Loading snapshots…</span></div>
         <div class="focus-card-grid" id="history-results" aria-live="polite"></div>
