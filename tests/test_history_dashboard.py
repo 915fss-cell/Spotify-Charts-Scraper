@@ -43,14 +43,16 @@ class HistoryDashboardTests(unittest.TestCase):
                 "appearance_count": 87,
                 "chart_count": 2,
                 "market_count": 3,
+                "charts": [{"chart_type": "daily_top_songs", "appearance_count": 50}, {"chart_type": "weekly_top_songs", "appearance_count": 37}],
             }]
             with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
                 app, "require_spotify_connection"
             ):
-                result = await app.history_calendar(2026, 11)
+                result = await app.history_calendar(2026, 11, None)
             self.assertEqual((result["year"], result["month"]), (2026, 11))
             self.assertEqual(result["days"][0]["chart_date"], "2026-11-14")
             self.assertEqual(result["days"][0]["appearance_count"], 87)
+            self.assertEqual(result["days"][0]["charts"][0]["chart_type"], "daily_top_songs")
 
         asyncio.run(run())
 
@@ -67,16 +69,68 @@ class HistoryDashboardTests(unittest.TestCase):
                 "artist_names": ["Example artist"],
                 "entity_type": "track",
                 "chart_rank": 1,
+                "previous_rank": 2,
+                "peak_rank": 1,
+                "consecutive_appearances": 3,
+                "appearances": 7,
+                "entry_date": date(2026, 11, 10),
                 "stream_count": 1234,
             }]
             with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
                 app, "require_spotify_connection"
             ):
-                result = await app.history_date_results(date(2026, 11, 14), 1, 1)
+                result = await app.history_date_results(date(2026, 11, 14), 1, 1, None)
             self.assertEqual(result["total"], 3)
             self.assertTrue(result["hasMore"])
             self.assertEqual(result["items"][0]["chart_date"], "2026-11-14")
             self.assertEqual(result["items"][0]["track_name"], "Example song")
+
+        asyncio.run(run())
+
+    def test_focused_history_date_filters_chart_snapshots(self):
+        async def run():
+            selected_date = date(2026, 11, 14)
+            row = {
+                "track_uri": "spotify:track:0123456789abcdef",
+                "entity_type": "track",
+                "track_name": "Example song",
+                "artist_names": "Example artist",
+                "country_code": "GLOBAL",
+                "chart_date": selected_date,
+                "chart_rank": 3,
+                "previous_rank": 4,
+                "peak_rank": 1,
+                "consecutive_appearances": 3,
+                "appearances": 7,
+                "entry_date": selected_date,
+                "stream_count": 1234,
+                "total_rows": 1,
+            }
+
+            class FocusedPool:
+                def __init__(self):
+                    self.fetch_calls = []
+
+                async def fetch(self, query, *args):
+                    self.fetch_calls.append((query, args))
+                    return [row] if len(self.fetch_calls) == 1 else []
+
+            pool = FocusedPool()
+            with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                app, "read_selected_entities", new=AsyncMock(return_value=[])
+            ):
+                result = await app.focused_history(
+                    cadence="daily",
+                    entity_type="track",
+                    chart_type="daily_top_songs",
+                    chart_date=selected_date,
+                    range="all",
+                    limit=50,
+                    offset=0,
+                )
+            self.assertEqual(pool.fetch_calls[0][1][4], selected_date)
+            self.assertEqual(result["chartDate"], "2026-11-14")
+            self.assertEqual(result["releases"][0]["regions"][0]["chartDate"], "2026-11-14")
 
         asyncio.run(run())
 
@@ -158,7 +212,7 @@ class HistoryDashboardTests(unittest.TestCase):
                 "chart_type": "daily_top_songs",
                 "country_code": "GLOBAL",
                 "requested_date": "2026-11-14",
-                "chart_date": date(2026, 11, 14),
+                "chart_date": "2026-11-14",
                 "status": "retry",
                 "attempt_count": 2,
                 "next_attempt_at": None,

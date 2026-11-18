@@ -18,12 +18,10 @@
   let historyEntityDetailOffset = 0;
   let collectionRunsOffset = 0;
   let collectionJobsOffset = 0;
-  let historyCalendarYear = null;
-  let historyCalendarMonth = null;
-  let historyCalendarRequest = 0;
-  let selectedHistoryCalendarDate = "";
-  let historyCalendarResultsOffset = 0;
-  let historyCalendarResultsRequest = 0;
+  const historyCalendarContexts = {
+    all: { prefix: "history", year: null, month: null, selectedDate: "", chartType: null, request: 0, resultsRequest: 0, resultsOffset: 0, daysByDate: new Map() },
+    focused: { prefix: "focus-history", year: null, month: null, selectedDate: "", chartType: null, request: 0, resultsRequest: 0, resultsOffset: 0, daysByDate: new Map() },
+  };
   let backfillRunnerActive = false;
   let backfillRunnerTimer = null;
   let backfillRunnerWaiter = null;
@@ -111,8 +109,8 @@
     return '<span class="focus-movement same" aria-label="No rank change">—</span>';
   }
 
-  function chartDetails(item) {
-    const unit = state.cadence === "weekly" ? "w" : "d";
+  function chartDetails(item, cadence = state.cadence) {
+    const unit = cadence === "weekly" ? "w" : "d";
     const details = [];
     if (item.peakRank != null) details.push(`Peak: #${item.peakRank}`);
     if (item.consecutiveAppearancesOnChart != null) details.push(`Cons: ${item.consecutiveAppearancesOnChart}${unit}`);
@@ -125,8 +123,8 @@
     return `<button class="quiet-button focus-trend-button" type="button" data-history-uri="${escapeHtml(entityUri)}" aria-label="View ${escapeHtml(entityName)} history across regions">View trend</button>`;
   }
 
-  function releaseRegionRow(item, showTrend = false) {
-    return `<div class="focus-data-row"><div class="focus-row-rank">${escapeHtml(item.chartRank ?? "—")}${movementMarkup(item)}</div><div class="focus-row-copy"><strong class="focus-row-title">${escapeHtml(item.regionName)}</strong><span class="focus-row-subtitle">${escapeHtml(chartDetails(item))}</span></div><div class="focus-row-metric"><strong>${escapeHtml(formatNumber(item.metricValue ?? item.streamCount))}</strong><span>${escapeHtml((item.metricType || (item.streamCount == null ? "rank" : "streams")).toLowerCase())}</span>${showTrend ? trendButton(item.entityUri, item.entityName) : ""}</div></div>`;
+  function releaseRegionRow(item, showTrend = false, cadence = state.cadence) {
+    return `<div class="focus-data-row"><div class="focus-row-rank">${escapeHtml(item.chartRank ?? "—")}${movementMarkup(item)}</div><div class="focus-row-copy"><strong class="focus-row-title">${escapeHtml(item.regionName)}</strong><span class="focus-row-subtitle">${escapeHtml(chartDetails(item, cadence))}</span></div><div class="focus-row-metric"><strong>${escapeHtml(formatNumber(item.metricValue ?? item.streamCount))}</strong><span>${escapeHtml((item.metricType || (item.streamCount == null ? "rank" : "streams")).toLowerCase())}</span>${showTrend ? trendButton(item.entityUri, item.entityName) : ""}</div></div>`;
   }
 
   function regionEntryRow(item) {
@@ -142,7 +140,7 @@
     return `<div class="focus-data-row has-art"><div class="focus-row-rank">${escapeHtml(item.chartRank ?? "—")}${movementMarkup(item)}</div>${artwork}<div class="focus-row-copy">${titleMarkup}<span class="focus-row-subtitle">${escapeHtml(subtitle)}</span></div><div class="focus-row-metric"><strong>${escapeHtml(formatNumber(item.metricValue ?? item.streamCount))}</strong><span>${escapeHtml((item.metricType || (item.streamCount == null ? "rank" : "streams")).toLowerCase())}</span>${item.entityUri ? trendButton(item.entityUri, item.entityName) : ""}</div></div>`;
   }
 
-  function renderReleaseCard(release, isHistory = false) {
+  function renderReleaseCard(release, isHistory = false, cadence = state.cadence) {
     const url = spotifyLink(release.entityUri);
     const title = escapeHtml(release.entityName || "Untitled");
     const titleMarkup = url
@@ -150,7 +148,7 @@
       : `<strong class="focus-release-title">${title}</strong>`;
     const artistNames = release.artistNames || (state.entityType === "artist" ? "Selected artist" : entityTypeName());
     const regions = release.regions || [];
-    return `<article class="focus-release-card"><header class="focus-release-heading">${coverMarkup(release.imageUrl, release.entityName)}<div class="focus-release-copy">${titleMarkup}<p class="focus-release-subtitle">${escapeHtml(artistNames)}</p></div><span class="focus-region-count">${regions.length} ${regions.length === 1 ? "region" : "regions"}</span></header><div class="focus-data-list">${regions.map((region) => releaseRegionRow(region, isHistory)).join("")}</div></article>`;
+    return `<article class="focus-release-card"><header class="focus-release-heading">${coverMarkup(release.imageUrl, release.entityName)}<div class="focus-release-copy">${titleMarkup}<p class="focus-release-subtitle">${escapeHtml(artistNames)}</p></div><span class="focus-region-count">${regions.length} ${regions.length === 1 ? "region" : "regions"}</span></header><div class="focus-data-list">${regions.map((region) => releaseRegionRow(region, isHistory, cadence)).join("")}</div></article>`;
   }
 
   function renderRegionCard(region, isHistory = false) {
@@ -381,13 +379,25 @@
     byId("collection-jobs-next").disabled = !payload.hasMore;
   }
 
-  function renderHistoryCalendar(payload) {
-    historyCalendarYear = payload.year;
-    historyCalendarMonth = payload.month;
+  function chartTypeLabel(chartType) {
+    return {
+      daily_top_songs: "Daily top songs",
+      daily_viral_songs: "Daily viral songs",
+      weekly_top_songs: "Weekly top songs",
+      daily_top_artists: "Daily top artists",
+      weekly_top_artists: "Weekly top artists",
+      weekly_top_albums: "Weekly top albums",
+    }[chartType] || chartType.replaceAll("_", " ");
+  }
+
+  function renderHistoryCalendar(context, payload) {
+    context.year = payload.year;
+    context.month = payload.month;
+    const prefix = context.prefix;
     const monthLabel = new Date(payload.year, payload.month - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
-    byId("history-calendar-month").textContent = monthLabel;
-    byId("history-calendar-grid").setAttribute("aria-label", `Saved chart data calendar for ${monthLabel}`);
-    const countsByDate = new Map(payload.days.map((day) => [day.chart_date, day]));
+    byId(`${prefix}-calendar-month`).textContent = monthLabel;
+    byId(`${prefix}-calendar-grid`).setAttribute("aria-label", `Saved chart data calendar for ${monthLabel}`);
+    context.daysByDate = new Map(payload.days.map((day) => [day.chart_date, day]));
     const firstWeekday = (new Date(payload.year, payload.month - 1, 1).getDay() + 6) % 7;
     const daysInMonth = new Date(payload.year, payload.month, 0).getDate();
     const weekdayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -396,80 +406,166 @@
     const dateCells = Array.from({ length: daysInMonth }, (_, index) => {
       const dayNumber = index + 1;
       const date = `${payload.year}-${String(payload.month).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
-      const saved = countsByDate.get(date);
+      const saved = context.daysByDate.get(date);
       if (!saved) {
         return `<button class="history-calendar-day" type="button" disabled aria-label="${date}, no saved chart data"><span class="history-calendar-day-number">${dayNumber}</span><span class="history-calendar-day-count">No data</span></button>`;
       }
       const count = Number(saved.appearance_count || 0);
       const level = count <= 50 ? 1 : count <= 500 ? 2 : 3;
       const labelDate = new Date(payload.year, payload.month - 1, dayNumber).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
-      return `<button class="history-calendar-day has-data" type="button" data-history-calendar-date="${date}" data-level="${level}" aria-pressed="${selectedHistoryCalendarDate === date}" aria-label="${labelDate}, ${count.toLocaleString()} saved appearances, ${Number(saved.chart_count || 0)} chart types, ${Number(saved.market_count || 0)} markets"><span class="history-calendar-day-number">${dayNumber}</span><span class="history-calendar-day-count">${count.toLocaleString()} saved</span></button>`;
+      const chartCount = Number(saved.chart_count || 0);
+      const marketCount = Number(saved.market_count || 0);
+      return `<button class="history-calendar-day has-data" type="button" data-history-calendar-date="${date}" data-level="${level}" aria-pressed="${context.selectedDate === date}" aria-label="${labelDate}, ${count.toLocaleString()} saved appearances, ${chartCount} chart types, ${marketCount} markets"><span class="history-calendar-day-number">${dayNumber}</span><span class="history-calendar-day-count">${count.toLocaleString()} saved</span></button>`;
     }).join("");
-    byId("history-calendar-grid").innerHTML = weekdayLabels + emptyCells + dateCells;
-    byId("history-calendar-previous").disabled = false;
-    byId("history-calendar-next").disabled = false;
+    byId(`${prefix}-calendar-grid`).innerHTML = weekdayLabels + emptyCells + dateCells;
+    byId(`${prefix}-calendar-previous`).disabled = false;
+    byId(`${prefix}-calendar-next`).disabled = false;
   }
 
-  async function loadHistoryCalendar(year = historyCalendarYear, month = historyCalendarMonth) {
-    const requestId = ++historyCalendarRequest;
+  async function loadHistoryCalendar(context, year = context.year, month = context.month, chartType = context.chartType) {
+    const requestId = ++context.request;
+    context.chartType = chartType;
     const params = new URLSearchParams();
     if (year && month) {
       params.set("year", String(year));
       params.set("month", String(month));
     }
+    if (chartType) params.set("chart_type", chartType);
     try {
       const payload = await requestJson(`/api/history/calendar${params.size ? `?${params}` : ""}`);
-      if (requestId !== historyCalendarRequest) return;
-      renderHistoryCalendar(payload);
+      if (requestId !== context.request) return;
+      renderHistoryCalendar(context, payload);
     } catch (error) {
-      if (requestId !== historyCalendarRequest) return;
-      byId("history-calendar-month").textContent = "Calendar unavailable";
-      byId("history-calendar-grid").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
+      if (requestId !== context.request) return;
+      byId(`${context.prefix}-calendar-month`).textContent = "Calendar unavailable";
+      byId(`${context.prefix}-calendar-grid`).innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
     }
   }
 
-  async function loadHistoryCalendarDate(date) {
-    selectedHistoryCalendarDate = date;
-    historyCalendarResultsOffset = 0;
-    byId("history-calendar-grid").querySelectorAll("[data-history-calendar-date]").forEach((button) => {
+  function snapshotCards(items, chartType) {
+    const releases = new Map();
+    for (const item of items) {
+      let release = releases.get(item.track_uri);
+      if (!release) {
+        release = {
+          entityUri: item.track_uri,
+          entityName: item.track_name || item.track_uri,
+          entityType: item.entity_type,
+          artistNames: item.artist_names || (item.entity_type === "artist" ? "Artist" : ""),
+          imageUrl: null,
+          regions: [],
+        };
+        releases.set(item.track_uri, release);
+      }
+      release.regions.push({
+        entityUri: item.track_uri,
+        entityType: item.entity_type,
+        entityName: item.track_name || item.track_uri,
+        artistNames: item.artist_names,
+        regionCode: item.country_code,
+        regionName: item.country_name || item.country_code,
+        chartDate: item.chart_date,
+        chartRank: item.chart_rank,
+        previousRank: item.previous_rank,
+        peakRank: item.peak_rank,
+        consecutiveAppearancesOnChart: item.consecutive_appearances,
+        appearancesOnChart: item.appearances,
+        entryDate: item.entry_date,
+        streamCount: item.stream_count,
+        metricValue: item.stream_count,
+        metricType: item.stream_count == null ? "rank" : "streams",
+      });
+    }
+    const cadence = chartType.startsWith("weekly_") ? "weekly" : "daily";
+    return [...releases.values()].map((release) => renderReleaseCard(release, false, cadence)).join("")
+      || '<p class="history-calendar-empty">No saved chart results were found for this date.</p>';
+  }
+
+  async function loadHistoryCalendarDateResults(context, chartType = context.resultsChartType || context.chartType) {
+    if (!context.selectedDate || !chartType) return;
+    context.resultsChartType = chartType;
+    const requestId = ++context.resultsRequest;
+    const { prefix, selectedDate: date } = context;
+    const isFocused = context === historyCalendarContexts.focused;
+    const pageSize = isFocused ? 200 : 50;
+    context.resultsPageSize = pageSize;
+    const params = isFocused
+      ? new URLSearchParams({
+        cadence: state.cadence,
+        entity_type: state.entityType,
+        chart_type: chartType,
+        chart_date: date,
+        range: "all",
+        limit: String(pageSize),
+        offset: String(context.resultsOffset),
+      })
+      : new URLSearchParams({
+        chart_date: date,
+        chart_type: chartType,
+        limit: String(pageSize),
+        offset: String(context.resultsOffset),
+      });
+    const resultsPanel = byId(`${prefix}-calendar-results`);
+    resultsPanel.hidden = false;
+    byId(`${prefix}-calendar-results-title`).textContent = new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+    byId(`${prefix}-calendar-results-count`).textContent = "Loading saved results…";
+    byId(`${prefix}-calendar-results-list`).innerHTML = '<p class="history-calendar-empty">Loading saved chart results…</p>';
+    try {
+      const path = isFocused ? "/api/focused/history" : "/api/history/date";
+      const payload = await requestJson(`${path}?${params}`);
+      if (requestId !== context.resultsRequest || date !== context.selectedDate) return;
+      let total;
+      let itemCount;
+      if (isFocused) {
+        const covers = new Map((liveOverview?.releases || []).map((release) => [release.entityUri, release.imageUrl]));
+        payload.releases.forEach((release) => { release.imageUrl = covers.get(release.entityUri) || null; });
+        renderResultCards(`${prefix}-calendar-results-list`, payload.releases, payload.regions, true);
+        total = Number(payload.totalRows || 0);
+        itemCount = Number(payload.snapshotRows || 0);
+      } else {
+        byId(`${prefix}-calendar-results-list`).innerHTML = snapshotCards(payload.items, chartType);
+        total = Number(payload.total || 0);
+        itemCount = payload.items.length;
+      }
+      byId(`${prefix}-calendar-results-count`).textContent = `${total.toLocaleString()} saved ${chartTypeLabel(chartType)} entries`;
+      const pagination = byId(`${prefix}-calendar-results-pagination`);
+      pagination.hidden = total <= pageSize;
+      byId(`${prefix}-calendar-results-page-label`).textContent = total
+        ? `${context.resultsOffset + 1}–${context.resultsOffset + itemCount} of ${total.toLocaleString()}`
+        : "No results";
+      byId(`${prefix}-calendar-results-previous`).disabled = context.resultsOffset === 0;
+      byId(`${prefix}-calendar-results-next`).disabled = !payload.hasMore;
+    } catch (error) {
+      if (requestId !== context.resultsRequest || date !== context.selectedDate) return;
+      byId(`${prefix}-calendar-results-count`).textContent = "Saved results unavailable";
+      byId(`${prefix}-calendar-results-list`).innerHTML = `<p class="history-calendar-empty">${escapeHtml(error.message)}</p>`;
+    }
+  }
+
+  async function loadHistoryCalendarDate(context, date) {
+    context.selectedDate = date;
+    context.resultsOffset = 0;
+    context.resultsChartType = null;
+    byId(`${context.prefix}-calendar-grid`).querySelectorAll("[data-history-calendar-date]").forEach((button) => {
       button.setAttribute("aria-pressed", String(button.dataset.historyCalendarDate === date));
     });
-    await loadHistoryCalendarDateResults();
-  }
-
-  async function loadHistoryCalendarDateResults() {
-    if (!selectedHistoryCalendarDate) return;
-    const requestId = ++historyCalendarResultsRequest;
-    const date = selectedHistoryCalendarDate;
-    const params = new URLSearchParams({
-      chart_date: date,
-      limit: "50",
-      offset: String(historyCalendarResultsOffset),
-    });
-    const resultsPanel = byId("history-calendar-results");
+    const resultsPanel = byId(`${context.prefix}-calendar-results`);
     resultsPanel.hidden = false;
-    byId("history-calendar-results-title").textContent = new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
-    byId("history-calendar-results-count").textContent = "Loading saved charts…";
-    byId("history-calendar-results-list").innerHTML = '<p class="history-calendar-empty">Loading saved chart results…</p>';
-    try {
-      const payload = await requestJson(`/api/history/date?${params}`);
-      if (requestId !== historyCalendarResultsRequest || date !== selectedHistoryCalendarDate) return;
-      const table = payload.items.length ? `<table class="history-calendar-table"><thead><tr><th scope="col">Chart</th><th scope="col">Market</th><th scope="col">Tracked entry</th><th scope="col">Rank</th><th scope="col">Streams</th></tr></thead><tbody>${payload.items.map((item) => `
-        <tr><td>${escapeHtml(item.chart_type.replaceAll("_", " "))}</td><td>${escapeHtml(item.country_code)}</td><td class="history-calendar-item-name"><strong>${escapeHtml(item.track_name || item.track_uri)}</strong>${item.artist_names ? `<small class="history-calendar-item-artist">${escapeHtml(item.artist_names)}</small>` : ""}</td><td>${item.chart_rank == null ? "—" : `#${Number(item.chart_rank).toLocaleString()}`}</td><td>${item.stream_count == null ? "—" : Number(item.stream_count).toLocaleString()}</td></tr>`).join("")}</tbody></table>` : '<p class="history-calendar-empty">No saved chart results were found for this date.</p>';
-      byId("history-calendar-results-list").innerHTML = table;
-      byId("history-calendar-results-count").textContent = `${Number(payload.total).toLocaleString()} saved chart entries`;
-      const pagination = byId("history-calendar-results-pagination");
-      pagination.hidden = payload.total <= 50;
-      byId("history-calendar-results-page-label").textContent = payload.total
-        ? `${historyCalendarResultsOffset + 1}–${historyCalendarResultsOffset + payload.items.length} of ${Number(payload.total).toLocaleString()}`
-        : "No results";
-      byId("history-calendar-results-previous").disabled = historyCalendarResultsOffset === 0;
-      byId("history-calendar-results-next").disabled = !payload.hasMore;
-    } catch (error) {
-      if (requestId !== historyCalendarResultsRequest || date !== selectedHistoryCalendarDate) return;
-      byId("history-calendar-results-count").textContent = "Saved charts unavailable";
-      byId("history-calendar-results-list").innerHTML = `<p class="history-calendar-empty">${escapeHtml(error.message)}</p>`;
+    byId(`${context.prefix}-calendar-results-title`).textContent = new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+    if (context === historyCalendarContexts.all) {
+      const saved = context.daysByDate.get(date);
+      const picker = byId("history-calendar-chart");
+      picker.innerHTML = '<option value="">Choose a chart</option>' + (saved?.charts || []).map((chart) =>
+        `<option value="${escapeHtml(chart.chart_type)}">${escapeHtml(chartTypeLabel(chart.chart_type))} · ${Number(chart.appearance_count).toLocaleString()} entries</option>`
+      ).join("");
+      picker.disabled = !saved?.charts?.length;
+      picker.value = "";
+      byId("history-calendar-results-count").textContent = saved?.charts?.length ? "Choose a chart to see its saved results." : "No saved results for this date.";
+      byId("history-calendar-results-list").innerHTML = '<p class="history-calendar-empty">Choose a chart above to view the entries saved that day.</p>';
+      byId("history-calendar-results-pagination").hidden = true;
+      return;
     }
+    await loadHistoryCalendarDateResults(context, context.chartType);
   }
 
   async function loadHistoryManagement() {
@@ -530,7 +626,7 @@
       byId("collection-runs-previous").disabled = collectionRunsOffset === 0;
       byId("collection-runs-next").disabled = !runs.hasMore;
       void loadHistoryEntities();
-      void loadHistoryCalendar();
+      void loadHistoryCalendar(historyCalendarContexts.all);
       void loadCollectionJobs().catch((error) => {
         byId("collection-jobs-list").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
       });
@@ -649,6 +745,13 @@
 
   async function loadFocusedHistory(refreshLive = false) {
     void loadHistoryManagement();
+    const focusedCalendar = historyCalendarContexts.focused;
+    if (focusedCalendar.chartType !== state.chartType || focusedCalendar.year == null) {
+      focusedCalendar.selectedDate = "";
+      focusedCalendar.resultsOffset = 0;
+      byId("focus-history-calendar-results").hidden = true;
+      void loadHistoryCalendar(focusedCalendar, null, null, state.chartType);
+    }
     const requestId = ++historyRequest;
     setStatus("selected-history-status", `Loading ${focusedSelectionName()} snapshots across regions…`);
     try {
@@ -972,27 +1075,40 @@
       setStatus("selected-history-status", error.message, true);
     }
   });
-  function moveHistoryCalendarMonth(offset) {
-    if (historyCalendarYear == null || historyCalendarMonth == null) return;
-    const next = new Date(historyCalendarYear, historyCalendarMonth - 1 + offset, 1);
-    selectedHistoryCalendarDate = "";
-    byId("history-calendar-results").hidden = true;
-    void loadHistoryCalendar(next.getFullYear(), next.getMonth() + 1);
+  function moveHistoryCalendarMonth(context, offset) {
+    if (context.year == null || context.month == null) return;
+    const next = new Date(context.year, context.month - 1 + offset, 1);
+    context.selectedDate = "";
+    context.resultsOffset = 0;
+    byId(`${context.prefix}-calendar-results`).hidden = true;
+    void loadHistoryCalendar(context, next.getFullYear(), next.getMonth() + 1, context.chartType);
   }
-  byId("history-calendar-previous").addEventListener("click", () => moveHistoryCalendarMonth(-1));
-  byId("history-calendar-next").addEventListener("click", () => moveHistoryCalendarMonth(1));
-  byId("history-calendar-grid").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-history-calendar-date]");
-    if (!button) return;
-    void loadHistoryCalendarDate(button.dataset.historyCalendarDate);
-  });
-  byId("history-calendar-results-previous").addEventListener("click", () => {
-    historyCalendarResultsOffset = Math.max(0, historyCalendarResultsOffset - 50);
-    void loadHistoryCalendarDateResults();
-  });
-  byId("history-calendar-results-next").addEventListener("click", () => {
-    historyCalendarResultsOffset += 50;
-    void loadHistoryCalendarDateResults();
+
+  function wireHistoryCalendar(context) {
+    const prefix = context.prefix;
+    byId(`${prefix}-calendar-previous`).addEventListener("click", () => moveHistoryCalendarMonth(context, -1));
+    byId(`${prefix}-calendar-next`).addEventListener("click", () => moveHistoryCalendarMonth(context, 1));
+    byId(`${prefix}-calendar-grid`).addEventListener("click", (event) => {
+      const button = event.target.closest("[data-history-calendar-date]");
+      if (button) void loadHistoryCalendarDate(context, button.dataset.historyCalendarDate);
+    });
+    byId(`${prefix}-calendar-results-previous`).addEventListener("click", () => {
+      context.resultsOffset = Math.max(0, context.resultsOffset - (context.resultsPageSize || 50));
+      void loadHistoryCalendarDateResults(context);
+    });
+    byId(`${prefix}-calendar-results-next`).addEventListener("click", () => {
+      context.resultsOffset += context.resultsPageSize || 50;
+      void loadHistoryCalendarDateResults(context);
+    });
+  }
+
+  wireHistoryCalendar(historyCalendarContexts.all);
+  wireHistoryCalendar(historyCalendarContexts.focused);
+  byId("history-calendar-chart").addEventListener("change", (event) => {
+    const context = historyCalendarContexts.all;
+    context.resultsOffset = 0;
+    context.resultsChartType = event.target.value || null;
+    if (context.resultsChartType) void loadHistoryCalendarDateResults(context, context.resultsChartType);
   });
   byId("history-entity-detail-previous").addEventListener("click", () => {
     historyEntityDetailOffset = Math.max(0, historyEntityDetailOffset - HISTORY_ENTITY_DETAIL_PAGE_SIZE);
