@@ -72,6 +72,7 @@
           <p class="nav-label">Workspace</p>
           <a class="nav-link" href="#charts" data-page-nav="charts"><span class="nav-glyph" aria-hidden="true">▤</span><span class="nav-text">Charts explorer</span></a>
           <a class="nav-link" href="#history" data-page-nav="history"><span class="nav-glyph" aria-hidden="true">⌁</span><span class="nav-text">History</span></a>
+          <a class="nav-link" href="#collection" data-page-nav="collection"><span class="nav-glyph" aria-hidden="true">↻</span><span class="nav-text">Collection</span></a>
         </div>
         <div class="side-note"><strong>Spotify Charts</strong><p>Explore official daily and weekly rankings by country. Data loads directly from Spotify Charts.</p></div>
       </aside>
@@ -117,12 +118,10 @@
         <p class="page-status" id="live-status" role="status" aria-live="polite">Loading charts for your saved selections…</p>
         <div class="focus-card-grid" id="live-results" aria-live="polite"></div>
       </main>
-      <main class="main page-panel focused-page" id="history" data-page-panel="history" hidden>
-        <div class="topline"><span class="eyebrow" id="history-eyebrow">Tracked chart history</span><div class="focus-header-actions"><button class="quiet-button" id="collection-run-now" type="button">Run collection now</button><button class="quiet-button" id="history-refresh" type="button">Refresh history</button><button class="connect-button" id="history-connect" type="button">Connect Spotify</button></div></div>
-        <nav class="chart-view-tabs" data-chart-tabs aria-label="Chart data view" hidden><a class="chart-view-tab" data-chart-tab="live" href="#live-daily-songs">Live</a><a class="chart-view-tab" data-chart-tab="history" href="#history-daily-songs" aria-current="page">History</a></nav>
-        <section class="intro" aria-labelledby="history-title">
-          <div><h1 id="history-title"><span id="history-title-label">History</span><span style="color:var(--lime)">.</span></h1><p id="history-description">Track entities, configure chart coverage, and review saved history and collection activity.</p></div>
-        </section>
+      <main class="main page-panel focused-page" id="collection" data-page-panel="collection" hidden>
+        <div class="topline"><span class="eyebrow">Collection operations</span><div class="focus-header-actions"><button class="quiet-button" id="collection-run-now" type="button">Run collection now</button><button class="quiet-button" id="collection-refresh" type="button">Refresh collection</button></div></div>
+        <section class="intro" aria-labelledby="collection-title"><div><h1 id="collection-title">Collection<span style="color:var(--lime)">.</span></h1><p>Manage tracked chart coverage, backfills, collection runs, and chart-date jobs.</p></div></section>
+        <p class="page-status" id="collection-status" role="status" aria-live="polite">Collection activity loads when you open this page.</p>
         <section class="chart-card history-management" aria-labelledby="history-overview-title">
           <div class="chart-head"><span class="chart-title" id="history-overview-title">Collection overview</span></div>
           <div class="history-overview-grid" id="history-overview-grid" aria-live="polite"></div>
@@ -155,7 +154,14 @@
           <nav class="history-pagination" id="collection-jobs-pagination" aria-label="Chart-date job pages" hidden><button class="quiet-button" id="collection-jobs-previous" type="button">Previous</button><span id="collection-jobs-page-indicator" aria-live="polite"></span><button class="quiet-button" id="collection-jobs-next" type="button">Next</button></nav>
 
         </section>
-        <section class="chart-card history-calendar-card" aria-labelledby="history-calendar-title">
+      </main>
+      <main class="main page-panel focused-page" id="history" data-page-panel="history" hidden>
+        <div class="topline"><span class="eyebrow" id="history-eyebrow">Tracked chart history</span><div class="focus-header-actions"><button class="quiet-button" id="history-refresh" type="button">Refresh history</button><button class="connect-button" id="history-connect" type="button">Connect Spotify</button></div></div>
+        <nav class="chart-view-tabs" data-chart-tabs aria-label="Chart data view" hidden><a class="chart-view-tab" data-chart-tab="live" href="#live-daily-songs">Live</a><a class="chart-view-tab" data-chart-tab="history" href="#history-daily-songs" aria-current="page">History</a></nav>
+        <section class="intro" aria-labelledby="history-title">
+          <div><h1 id="history-title"><span id="history-title-label">History</span><span style="color:var(--lime)">.</span></h1><p id="history-description">Review saved appearances and tracked entities across Spotify charts.</p></div>
+        </section>
+        <section class="chart-card history-calendar-card" id="history-calendar-card" aria-labelledby="history-calendar-title">
           <div class="chart-head history-calendar-head">
             <div><span class="chart-title" id="history-calendar-title">Saved chart data</span><p class="history-calendar-description">Choose a highlighted date to see the chart entries saved that day.</p></div>
             <div class="history-calendar-navigation" aria-label="Calendar month navigation">
@@ -212,7 +218,7 @@
             <div class="field focus-history-metric"><label for="history-metric">Trend metric</label><select id="history-metric"><option value="streams">Chart streams</option><option value="rank">Chart rank</option></select></div>
           </div>
         </div>
-        <section class="chart-card history-calendar-card focused-history-calendar" aria-labelledby="focus-history-calendar-title">
+        <section class="chart-card history-calendar-card focused-history-calendar" id="focus-history-calendar" aria-labelledby="focus-history-calendar-title">
           <div class="chart-head history-calendar-head">
             <div><span class="chart-title" id="focus-history-calendar-title">Saved dates for this chart</span><p class="history-calendar-description">Choose a date to view this chart&apos;s saved results.</p></div>
             <div class="history-calendar-navigation" aria-label="Chart calendar month navigation">

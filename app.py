@@ -722,12 +722,37 @@ async def history_date_results(
         chart_date, chart_type,
     ) or 0)
     rows = await pool.fetch(
-        """SELECT chart_type, country_code, chart_date, track_uri, track_name,
-                  artist_names, entity_type, chart_rank, previous_rank, peak_rank,
-                  consecutive_appearances, appearances, entry_date, stream_count
-           FROM public.spotify_chart_snapshots
-           WHERE chart_date = $1 AND ($2::text IS NULL OR chart_type = $2)
-           ORDER BY country_code, chart_rank NULLS LAST, track_name, track_uri
+        """SELECT snapshot.chart_type, snapshot.country_code, snapshot.chart_date,
+                  snapshot.track_uri, snapshot.track_name, snapshot.artist_names,
+                  snapshot.entity_type, snapshot.chart_rank, snapshot.previous_rank,
+                  snapshot.peak_rank, snapshot.consecutive_appearances, snapshot.appearances,
+                  snapshot.entry_date, snapshot.stream_count,
+                  COALESCE(art.image_url, selection.image_url) AS image_url
+           FROM public.spotify_chart_snapshots snapshot
+           LEFT JOIN LATERAL (
+               SELECT COALESCE(
+                   chart_entry->'trackMetadata'->>'displayImageUri',
+                   chart_entry->'albumMetadata'->>'displayImageUri',
+                   chart_entry->'artistMetadata'->>'displayImageUri'
+               ) AS image_url
+               FROM public.spotify_chart_payload_cache pc
+               CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pc.payload->'entries', '[]'::jsonb)) chart_entry
+               WHERE pc.chart_type = snapshot.chart_type
+                 AND pc.country_code = snapshot.country_code
+                 AND pc.chart_date = snapshot.chart_date
+                 AND COALESCE(
+                     chart_entry->'trackMetadata'->>'trackUri',
+                     chart_entry->'albumMetadata'->>'albumUri',
+                     chart_entry->'artistMetadata'->>'artistUri',
+                     chart_entry->>'trackUri', chart_entry->>'albumUri', chart_entry->>'artistUri'
+                 ) = snapshot.track_uri
+               ORDER BY pc.fetched_at DESC
+               LIMIT 1
+           ) art ON true
+           LEFT JOIN public.spotify_chart_selections selection
+             ON selection.entity_uri = snapshot.track_uri
+           WHERE snapshot.chart_date = $1 AND ($2::text IS NULL OR snapshot.chart_type = $2)
+           ORDER BY snapshot.country_code, snapshot.chart_rank NULLS LAST, snapshot.track_name, snapshot.track_uri
            LIMIT $3 OFFSET $4""",
         chart_date, chart_type, limit, offset,
     )
@@ -737,6 +762,7 @@ async def history_date_results(
         "items": [
             {
                 **dict(row),
+                "imageUrl": row.get("image_url"),
                 "chart_date": row["chart_date"].isoformat(),
                 "entry_date": row["entry_date"].isoformat() if row["entry_date"] else None,
                 "country_name": COUNTRY_NAMES.get(row["country_code"], row["country_code"]),
@@ -1630,6 +1656,7 @@ def history_point(row) -> dict[str, Any]:
         "entityType": row["entity_type"],
         "entityName": row["track_name"],
         "artistNames": row["artist_names"],
+        "imageUrl": row.get("image_url"),
         "regionCode": country_code,
         "regionName": COUNTRY_NAMES.get(country_code, country_code),
         "chartDate": row["chart_date"].isoformat(),
@@ -1652,9 +1679,11 @@ def group_history_points(points: list[dict[str, Any]]) -> tuple[list[dict[str, A
             "entityType": point["entityType"],
             "entityName": point["entityName"],
             "artistNames": point["artistNames"],
-            "imageUrl": None,
+            "imageUrl": point.get("imageUrl"),
             "regions": [],
         })
+        if not release["imageUrl"] and point.get("imageUrl"):
+            release["imageUrl"] = point["imageUrl"]
         release["regions"].append(point)
         region = regions.setdefault(point["regionCode"], {
             "regionCode": point["regionCode"],
@@ -1704,6 +1733,7 @@ def focused_snapshot_history_points(
                         "entityType": item.get("entityType"),
                         "entityName": item.get("entityName") or "Untitled",
                         "artistNames": item.get("artistNames") or "",
+                        "imageUrl": item.get("imageUrl"),
                         "regionCode": region_code,
                         "regionName": item.get("regionName") or region.get("regionName") or COUNTRY_NAMES.get(region_code, region_code),
                         "chartDate": chart_day.isoformat(),
@@ -1780,8 +1810,33 @@ async def focused_history(
                   )
                 ORDER BY country_code, track_uri, chart_date DESC, fetched_at DESC
             )
-            SELECT *, count(*) OVER() AS total_rows FROM latest_per_market
-            ORDER BY country_code, track_uri LIMIT $6 OFFSET $7
+            SELECT history.*,
+                   COALESCE(art.image_url, selection.image_url) AS image_url,
+                   count(*) OVER() AS total_rows
+            FROM latest_per_market history
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(
+                    chart_entry->'trackMetadata'->>'displayImageUri',
+                    chart_entry->'albumMetadata'->>'displayImageUri',
+                    chart_entry->'artistMetadata'->>'displayImageUri'
+                ) AS image_url
+                FROM public.spotify_chart_payload_cache pc
+                CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pc.payload->'entries', '[]'::jsonb)) chart_entry
+                WHERE pc.chart_type = $1
+                  AND pc.country_code = history.country_code
+                  AND pc.chart_date = history.chart_date
+                  AND COALESCE(
+                      chart_entry->'trackMetadata'->>'trackUri',
+                      chart_entry->'albumMetadata'->>'albumUri',
+                      chart_entry->'artistMetadata'->>'artistUri',
+                      chart_entry->>'trackUri', chart_entry->>'albumUri', chart_entry->>'artistUri'
+                  ) = history.track_uri
+                ORDER BY pc.fetched_at DESC
+                LIMIT 1
+            ) art ON true
+            LEFT JOIN public.spotify_chart_selections selection
+              ON selection.entity_uri = history.track_uri
+            ORDER BY history.country_code, history.track_uri LIMIT $6 OFFSET $7
             """,
             chart_type,
             entity_type,

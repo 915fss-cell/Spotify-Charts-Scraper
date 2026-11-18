@@ -319,7 +319,7 @@
     historyTrendData = null;
     byId("history-chart-card").hidden = true;
     const covers = new Map((liveOverview?.releases || []).map((release) => [release.entityUri, release.imageUrl]));
-    payload.releases.forEach((release) => { release.imageUrl = covers.get(release.entityUri) || null; });
+    payload.releases.forEach((release) => { release.imageUrl = release.imageUrl || covers.get(release.entityUri) || null; });
     byId("history-results-title").textContent = state.view === "release" ? `${focusedSelectionName()} history` : `${focusedSelectionName()} by market`;
     byId("history-results-count").textContent = `${payload.releases.length} entities · ${payload.regions.length} markets · ${Number(payload.totalRows || 0).toLocaleString()} saved appearances`;
     const pagination = byId("history-pagination");
@@ -452,10 +452,12 @@
           entityName: item.track_name || item.track_uri,
           entityType: item.entity_type,
           artistNames: item.artist_names || (item.entity_type === "artist" ? "Artist" : ""),
-          imageUrl: null,
+          imageUrl: item.imageUrl || null,
           regions: [],
         };
         releases.set(item.track_uri, release);
+      } else if (!release.imageUrl && item.imageUrl) {
+        release.imageUrl = item.imageUrl;
       }
       release.regions.push({
         entityUri: item.track_uri,
@@ -518,7 +520,7 @@
       let itemCount;
       if (isFocused) {
         const covers = new Map((liveOverview?.releases || []).map((release) => [release.entityUri, release.imageUrl]));
-        payload.releases.forEach((release) => { release.imageUrl = covers.get(release.entityUri) || null; });
+        payload.releases.forEach((release) => { release.imageUrl = release.imageUrl || covers.get(release.entityUri) || null; });
         renderResultCards(`${prefix}-calendar-results-list`, payload.releases, payload.regions, true);
         total = Number(payload.totalRows || 0);
         itemCount = Number(payload.snapshotRows || 0);
@@ -578,6 +580,7 @@
         requestJson(`/api/collection/runs?limit=8&offset=${collectionRunsOffset}`),
         requestJson("/api/chart-history/backfill/queue"),
       ]);
+      setStatus("collection-status", "Collection settings and activity are up to date.");
       if (!backfillRunnerActive) {
         const remaining = Number(backfillQueue.remainingDates || 0).toLocaleString();
         setStatus("backfill-runner-status", `${remaining} historical chart dates remaining across ${Number(backfillQueue.activeJobs || 0).toLocaleString()} active jobs. Progress is saved after each date.`);
@@ -625,8 +628,6 @@
         : "No collection runs";
       byId("collection-runs-previous").disabled = collectionRunsOffset === 0;
       byId("collection-runs-next").disabled = !runs.hasMore;
-      void loadHistoryEntities();
-      void loadHistoryCalendar(historyCalendarContexts.all);
       void loadCollectionJobs().catch((error) => {
         byId("collection-jobs-list").innerHTML = `<p class="history-empty-row">${escapeHtml(error.message)}</p>`;
       });
@@ -744,7 +745,8 @@
   }
 
   async function loadFocusedHistory(refreshLive = false) {
-    void loadHistoryManagement();
+    void loadHistoryEntities();
+    void loadHistoryCalendar(historyCalendarContexts.all);
     const focusedCalendar = historyCalendarContexts.focused;
     if (focusedCalendar.chartType !== state.chartType || focusedCalendar.year == null) {
       focusedCalendar.selectedDate = "";
@@ -883,7 +885,7 @@
     const routeKey = page === "live" ? "live-daily-songs" : historyRouteKey || page;
     const route = liveRoutes[routeKey];
     const isChartHistory = Boolean(route && historyRouteKey);
-    const validPage = route ? (isChartHistory ? "history" : "live") : ["charts", "history"].includes(page) ? page : "charts";
+    const validPage = route ? (isChartHistory ? "history" : "live") : ["charts", "history", "collection"].includes(page) ? page : "charts";
     if (route) {
       state.cadence = route.cadence;
       state.entityType = route.entityType;
@@ -909,7 +911,7 @@
       state.marketScope = "global";
       byId("history-title-label").textContent = "History";
       byId("history-eyebrow").textContent = "Tracked chart history";
-      byId("history-description").textContent = "Review saved appearances, tracked entities, and collection activity.";
+      byId("history-description").textContent = "Review saved appearances and tracked entities across Spotify charts.";
       updateFocusControls();
     }
     document.querySelectorAll("[data-chart-tabs]").forEach((tabs) => {
@@ -926,6 +928,8 @@
     });
     byId("history-cadence-control").hidden = isChartHistory;
     byId("history-entity-control").hidden = isChartHistory;
+    byId("history-calendar-card").hidden = isChartHistory;
+    byId("focus-history-calendar").hidden = !isChartHistory;
     activePage = validPage;
     document.querySelectorAll("[data-page-panel]").forEach((panel) => {
       panel.hidden = panel.dataset.pagePanel !== validPage;
@@ -938,6 +942,7 @@
     });
     if (validPage === "live") loadFocusedLive();
     if (validPage === "history") loadFocusedHistory();
+    if (validPage === "collection") void loadHistoryManagement();
   }
 
   document.querySelectorAll("[data-focus-key]").forEach((button) => {
@@ -977,6 +982,8 @@
     });
   byId("history-refresh").addEventListener("click", () => {
     loadFocusedHistory(true);
+  });
+  byId("collection-refresh").addEventListener("click", () => {
     void loadHistoryManagement();
   });
   byId("collection-run-now").addEventListener("click", async () => {
@@ -985,15 +992,14 @@
     button.textContent = "Collecting…";
     try {
       const result = await requestJson("/api/collection/run", { method: "POST" });
-      setStatus("selected-history-status", `Collection ${result.status}: ${Number(result.completedChartKeys || 0)} of ${Number(result.requestedChartKeys || 0)} chart keys processed.`);
-      await loadHistoryManagement();
-      await loadFocusedHistory(true);
-    } catch (error) {
-      setStatus("selected-history-status", error.message, true);
-    } finally {
-      button.disabled = false;
-      button.textContent = "Run collection now";
-    }
+    setStatus("collection-status", `Collection ${result.status}: ${Number(result.completedChartKeys || 0)} of ${Number(result.requestedChartKeys || 0)} chart keys processed.`);
+    await loadHistoryManagement();
+  } catch (error) {
+    setStatus("collection-status", error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Run collection now";
+  }
   });
   byId("history-range").addEventListener("change", () => {
     historyOffset = 0;
@@ -1043,15 +1049,15 @@
   byId("collection-jobs-filter").addEventListener("submit", (event) => {
     event.preventDefault();
     collectionJobsOffset = 0;
-    void loadCollectionJobs().catch((error) => setStatus("selected-history-status", error.message, true));
+    void loadCollectionJobs().catch((error) => setStatus("collection-status", error.message, true));
   });
   byId("collection-jobs-previous").addEventListener("click", () => {
     collectionJobsOffset = Math.max(0, collectionJobsOffset - 10);
-    void loadCollectionJobs().catch((error) => setStatus("selected-history-status", error.message, true));
+    void loadCollectionJobs().catch((error) => setStatus("collection-status", error.message, true));
   });
   byId("collection-jobs-next").addEventListener("click", () => {
     collectionJobsOffset += 10;
-    void loadCollectionJobs().catch((error) => setStatus("selected-history-status", error.message, true));
+    void loadCollectionJobs().catch((error) => setStatus("collection-status", error.message, true));
   });
   byId("collection-jobs-list").addEventListener("click", async (event) => {
     const button = event.target.closest("[data-retry-chart-job]");
@@ -1067,12 +1073,12 @@
           requested_date: button.dataset.requestedDate,
         }),
       });
-      setStatus("selected-history-status", "Chart date queued for an explicit retry. It will be processed by a collection run.");
+      setStatus("collection-status", "Chart date queued for an explicit retry. It will be processed by a collection run.");
       await loadCollectionJobs();
       await loadHistoryManagement();
     } catch (error) {
       button.disabled = false;
-      setStatus("selected-history-status", error.message, true);
+      setStatus("collection-status", error.message, true);
     }
   });
   function moveHistoryCalendarMonth(context, offset) {
@@ -1134,11 +1140,10 @@
           backfill_start_date: byId("tracking-start-date").value || null,
         }),
       });
-      setStatus("selected-history-status", "Tracking configuration saved.");
+      setStatus("collection-status", "Tracking configuration saved.");
       await loadHistoryManagement();
-      await loadFocusedHistory();
     } catch (error) {
-      setStatus("selected-history-status", error.message, true);
+      setStatus("collection-status", error.message, true);
     }
   });
   byId("tracking-config-list").addEventListener("click", async (event) => {
@@ -1170,8 +1175,8 @@
             target_entity_uris: [uri],
           }),
         });
-        setStatus("selected-history-status", `Backfill ${progress.status}: ${Number(progress.processedDates || 0)} of ${Number(progress.totalDates || 0)} dates processed. Select “Backfill next batch” again to resume.`);
-        await loadFocusedHistory();
+        setStatus("collection-status", `Backfill ${progress.status}: ${Number(progress.processedDates || 0)} of ${Number(progress.totalDates || 0)} dates processed. Select “Backfill next batch” again to resume.`);
+        await loadHistoryManagement();
       } else {
         await requestJson("/api/tracking/configs", {
           method: "POST",
@@ -1184,10 +1189,9 @@
           }),
         });
         await loadHistoryManagement();
-        await loadFocusedHistory();
       }
     } catch (error) {
-      setStatus("selected-history-status", error.message, true);
+      setStatus("collection-status", error.message, true);
     } finally {
       button.disabled = false;
     }
