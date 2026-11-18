@@ -6,8 +6,7 @@ import os
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import date as calendar_date, datetime, time as clock_time, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import date as calendar_date, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode, urlsplit
@@ -336,12 +335,6 @@ class TrackingConfigInput(BaseModel):
     country_code: str = Field(min_length=2, max_length=6)
     enabled: bool = True
     backfill_start_date: calendar_date | None = None
-
-
-class CollectionScheduleInput(BaseModel):
-    enabled: bool
-    local_time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
-    timezone: str = Field(min_length=1, max_length=80)
 
 
 class ChartJobRetryInput(BaseModel):
@@ -865,14 +858,9 @@ async def history_overview() -> dict[str, Any]:
                   completed_chart_keys, unavailable_chart_keys, failed_chart_keys, summary_error
            FROM public.spotify_collection_runs ORDER BY id DESC LIMIT 1"""
     )
-    schedule = await pool.fetchrow(
-        """SELECT enabled, local_time, timezone, next_run_at
-           FROM public.spotify_collection_schedule WHERE singleton = true"""
-    )
     return {
         **dict(counts),
         "lastRun": dict(last_run) if last_run else None,
-        "schedule": dict(schedule) if schedule else None,
     }
 
 
@@ -884,16 +872,16 @@ async def start_manual_collection() -> dict[str, Any]:
     return result or {"status": "not_started"}
 
 
-@app.get("/api/collection/tick")
-async def scheduled_collection_tick(request: Request) -> dict[str, Any]:
+@app.post("/api/collection/workflow")
+async def repository_workflow_collection(request: Request) -> dict[str, Any]:
     secret = os.environ.get("CRON_SECRET") or os.environ.get("SPOTIFY_COLLECTION_CRON_SECRET")
     authorization = request.headers.get("authorization", "")
     supplied = authorization.removeprefix("Bearer ")
     if not secret or not secrets.compare_digest(supplied, secret):
-        raise HTTPException(status_code=401, detail="Collection schedule authorization is invalid.")
+        raise HTTPException(status_code=401, detail="Collection workflow authorization is invalid.")
     pool = await get_history_pool()
-    result = await run_collection_tick(pool, get_spotify_scraper, source="scheduled")
-    return result or {"status": "not_due"}
+    result = await run_collection_tick(pool, get_spotify_scraper, source="manual")
+    return result or {"status": "not_started"}
 
 
 @app.get("/api/collection/runs")
@@ -1012,46 +1000,6 @@ async def retry_collection_job(retry: ChartJobRetryInput) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=f"This chart date cannot be retried while its status is {existing}.")
     return {"chart_type": row["chart_type"], "country_code": row["country_code"],
             "requested_date": row["requested_date"], "status": row["status"]}
-
-
-@app.get("/api/collection/schedule")
-async def read_collection_schedule() -> dict[str, Any]:
-    require_spotify_connection()
-    pool = await get_history_pool()
-    row = await pool.fetchrow(
-        "SELECT enabled, local_time, timezone, next_run_at FROM public.spotify_collection_schedule WHERE singleton = true"
-    )
-    return dict(row) if row else {"enabled": False, "local_time": "09:00:00", "timezone": "Africa/Algiers", "next_run_at": None}
-
-
-@app.put("/api/collection/schedule")
-async def update_collection_schedule(schedule: CollectionScheduleInput) -> dict[str, Any]:
-    require_spotify_connection()
-    try:
-        zone = ZoneInfo(schedule.timezone)
-        hour, minute = (int(part) for part in schedule.local_time.split(":"))
-    except (ValueError, ZoneInfoNotFoundError) as error:
-        raise HTTPException(status_code=400, detail="Choose a valid IANA timezone and local time.") from error
-
-    now = datetime.now(timezone.utc)
-    local_now = now.astimezone(zone)
-    local_next = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if local_next <= local_now:
-        local_next = local_next + timedelta(days=1)
-    next_run_at = local_next.astimezone(timezone.utc) if schedule.enabled else None
-    pool = await get_history_pool()
-    row = await pool.fetchrow(
-        """INSERT INTO public.spotify_collection_schedule
-             (singleton, enabled, local_time, timezone, next_run_at, updated_at)
-           VALUES (true, $1, $2::time, $3, $4, now())
-           ON CONFLICT (singleton) DO UPDATE SET enabled = EXCLUDED.enabled,
-             local_time = EXCLUDED.local_time, timezone = EXCLUDED.timezone,
-             next_run_at = EXCLUDED.next_run_at, lease_owner = NULL, lease_expires_at = NULL,
-             updated_at = now()
-           RETURNING enabled, local_time, timezone, next_run_at""",
-        schedule.enabled, clock_time(hour, minute), schedule.timezone, next_run_at,
-    )
-    return dict(row)
 
 
 @app.get("/api/search")

@@ -474,13 +474,12 @@
 
   async function loadHistoryManagement() {
     try {
-      const [overview, configs, selections, countries, runs, schedule, backfillQueue] = await Promise.all([
+      const [overview, configs, selections, countries, runs, backfillQueue] = await Promise.all([
         requestJson("/api/history/overview"),
         requestJson("/api/tracking/configs"),
         requestJson("/api/selections"),
         requestJson("/api/countries"),
         requestJson(`/api/collection/runs?limit=8&offset=${collectionRunsOffset}`),
-        requestJson("/api/collection/schedule"),
         requestJson("/api/chart-history/backfill/queue"),
       ]);
       if (!backfillRunnerActive) {
@@ -529,11 +528,6 @@
         : "No collection runs";
       byId("collection-runs-previous").disabled = collectionRunsOffset === 0;
       byId("collection-runs-next").disabled = !runs.hasMore;
-      const nextRun = schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString() : "Schedule disabled";
-      byId("collection-next-run").textContent = nextRun;
-      byId("collection-time").value = String(schedule.local_time || "09:00").slice(0, 5);
-      byId("collection-timezone").value = schedule.timezone || "Africa/Algiers";
-      byId("collection-enabled").checked = Boolean(schedule.enabled);
       void loadHistoryEntities();
       void loadHistoryCalendar();
       void loadCollectionJobs().catch((error) => {
@@ -1151,24 +1145,6 @@
     backfillRunnerActive = false;
     setStatus("backfill-runner-status", "Pause requested. The current bounded batch will finish before the runner stops.");
     if (backfillRunnerWaiter) backfillRunnerWaiter();
-  });
-  byId("collection-schedule-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    try {
-      const schedule = await requestJson("/api/collection/schedule", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          enabled: byId("collection-enabled").checked,
-          local_time: byId("collection-time").value,
-          timezone: byId("collection-timezone").value.trim(),
-        }),
-      });
-      byId("collection-next-run").textContent = schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString() : "Schedule disabled";
-      setStatus("selected-history-status", "Collection schedule saved. Configure cron-job.org to call /api/collection/tick with the CRON_SECRET authorization header.");
-    } catch (error) {
-      setStatus("selected-history-status", error.message, true);
-    }
   });
   byId("history-metric").addEventListener("change", () => {
     if (historyTrendData) renderHistoryTrend(historyTrendData);
