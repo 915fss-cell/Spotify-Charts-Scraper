@@ -180,7 +180,15 @@ class HistoryDashboardTests(unittest.TestCase):
                     "country_code": "GLOBAL",
                     "chart_date": date(2026, 11, 14),
                     "chart_rank": 2,
+                    "previous_rank": 4,
+                    "peak_rank": 2,
+                    "consecutive_appearances": 3,
+                    "entry_date": date(2026, 11, 12),
+                    "first_entry_position": 5,
+                    "total_days": 3,
                     "stream_count": 1000,
+                    "daily_streams": 250,
+                    "total_chart_streams": 900,
                 }
             ]
             with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
@@ -191,6 +199,10 @@ class HistoryDashboardTests(unittest.TestCase):
                 )
             self.assertEqual(result["summary"]["peak_rank"], 2)
             self.assertEqual(result["items"][0]["chart_date"], "2026-11-14")
+            self.assertEqual(result["items"][0]["entry_date"], "2026-11-12")
+            self.assertEqual(result["items"][0]["peak_rank"], 2)
+            self.assertEqual(result["items"][0]["daily_streams"], 250)
+            self.assertEqual(result["items"][0]["total_chart_streams"], 900)
             self.assertFalse(result["hasMore"])
 
         asyncio.run(run())

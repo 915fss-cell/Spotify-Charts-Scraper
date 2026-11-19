@@ -892,25 +892,57 @@ async def history_entity_detail(
     )
     total = int(summary["appearances"] or 0)
     rows = await pool.fetch(
-        """SELECT chart_type, country_code, chart_date, chart_rank, stream_count
-           FROM public.spotify_chart_snapshots
-           WHERE track_uri = $1 AND ($2::text IS NULL OR country_code = $2)
-             AND ($3::text IS NULL OR chart_type = $3)
-             AND ($4::date IS NULL OR chart_date >= $4)
+        """WITH history AS (
+             SELECT chart_type, country_code, chart_date, chart_rank, previous_rank,
+                    peak_rank, consecutive_appearances, entry_date, stream_count,
+                    lag(stream_count) OVER (PARTITION BY country_code, chart_type ORDER BY chart_date) AS prior_stream_count,
+                    first_value(chart_rank) OVER (PARTITION BY country_code, chart_type ORDER BY chart_date) AS first_entry_position,
+                    min(chart_rank) OVER (PARTITION BY country_code, chart_type ORDER BY chart_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS peak_to_date,
+                    count(*) OVER (PARTITION BY country_code, chart_type ORDER BY chart_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS total_days
+             FROM public.spotify_chart_snapshots
+             WHERE track_uri = $1 AND ($2::text IS NULL OR country_code = $2)
+               AND ($3::text IS NULL OR chart_type = $3)
+           ), enriched AS (
+             SELECT *, greatest(coalesce(stream_count, 0) - coalesce(prior_stream_count, 0), 0) AS daily_streams
+             FROM history
+           ), totals AS (
+             SELECT *, sum(daily_streams) OVER (PARTITION BY country_code, chart_type ORDER BY chart_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS total_chart_streams
+             FROM enriched
+           )
+           SELECT chart_type, country_code, chart_date, chart_rank, previous_rank,
+                  peak_to_date AS peak_rank, consecutive_appearances, entry_date,
+                  first_entry_position, total_days, stream_count, daily_streams,
+                  total_chart_streams
+           FROM totals
+           WHERE ($4::date IS NULL OR chart_date >= $4)
              AND ($5::date IS NULL OR chart_date <= $5)
            ORDER BY country_code, chart_date DESC, chart_type
            LIMIT $6 OFFSET $7""",
         *filters, limit, offset,
     )
+    release_date = None
+    if entity["entity_type"] == "track":
+        try:
+            scraper = await get_spotify_scraper()
+            track_id = entity_uri.rsplit(":", 1)[-1]
+            async with httpx.AsyncClient(timeout=8) as client:
+                response = await client.get(
+                    f"https://api.spotify.com/v1/tracks/{track_id}",
+                    headers=scraper.headers,
+                )
+            if response.is_success:
+                release_date = (response.json().get("album") or {}).get("release_date")
+        except (HTTPException, httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError, IndexError):
+            release_date = None
     return {
-        "entity": dict(entity),
+        "entity": {**dict(entity), "release_date": release_date},
         "summary": {
             **dict(summary),
             "first_appearance": summary["first_appearance"].isoformat() if summary["first_appearance"] else None,
             "latest_appearance": summary["latest_appearance"].isoformat() if summary["latest_appearance"] else None,
         },
         "items": [
-            {**dict(row), "chart_date": row["chart_date"].isoformat()}
+            {**dict(row), "chart_date": row["chart_date"].isoformat(), "entry_date": row["entry_date"].isoformat() if row.get("entry_date") else None}
             for row in rows
         ],
         "total": total,
