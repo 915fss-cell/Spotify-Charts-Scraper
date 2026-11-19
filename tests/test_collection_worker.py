@@ -1,13 +1,15 @@
 import unittest
 from datetime import date, datetime, time, timedelta, timezone
 import httpx
+from fastapi import HTTPException
 
-from chart_history import save_chart_snapshot, snapshot_values
+from chart_history import CHART_STEPS, save_chart_snapshot, snapshot_values
 from collection_worker import (
     _process_pending_history_jobs,
     _release_schedule,
     _start_run,
     next_schedule_time,
+    normalize_chart_types,
     run_collection_tick,
 )
 from spotify_charts import parse_retry_after_delay
@@ -138,6 +140,21 @@ class RunLifecyclePool:
 
 
 class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
+    def test_empty_chart_selection_defaults_to_all_supported_charts(self):
+        self.assertEqual(normalize_chart_types(None), list(CHART_STEPS))
+        self.assertEqual(normalize_chart_types([]), list(CHART_STEPS))
+
+    def test_chart_selection_filters_and_deduplicates_supported_charts(self):
+        self.assertEqual(
+            normalize_chart_types(["weekly_top_albums", "daily_top_songs", "daily_top_songs"]),
+            ["daily_top_songs", "weekly_top_albums"],
+        )
+
+    def test_chart_selection_rejects_unsupported_types(self):
+        with self.assertRaises(HTTPException) as raised:
+            normalize_chart_types(["not_a_chart"])
+        self.assertEqual(raised.exception.status_code, 400)
+
     def test_next_run_respects_local_timezone_and_advances_to_next_day(self):
         now = datetime(2026, 11, 14, 10, 0, tzinfo=timezone.utc)
 

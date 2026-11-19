@@ -2,6 +2,37 @@ name: Spotify chart collection
 
 on:
   workflow_dispatch:
+    inputs:
+      daily_top_songs:
+        description: Daily top songs (leave all unchecked to load every chart)
+        type: boolean
+        required: false
+        default: false
+      daily_viral_songs:
+        description: Daily viral songs
+        type: boolean
+        required: false
+        default: false
+      weekly_top_songs:
+        description: Weekly top songs
+        type: boolean
+        required: false
+        default: false
+      daily_top_artists:
+        description: Daily top artists
+        type: boolean
+        required: false
+        default: false
+      weekly_top_artists:
+        description: Weekly top artists
+        type: boolean
+        required: false
+        default: false
+      weekly_top_albums:
+        description: Weekly top albums
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -18,6 +49,12 @@ jobs:
       - name: Run collection from GitHub Actions
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          DAILY_TOP_SONGS: ${{ inputs.daily_top_songs }}
+          DAILY_VIRAL_SONGS: ${{ inputs.daily_viral_songs }}
+          WEEKLY_TOP_SONGS: ${{ inputs.weekly_top_songs }}
+          DAILY_TOP_ARTISTS: ${{ inputs.daily_top_artists }}
+          WEEKLY_TOP_ARTISTS: ${{ inputs.weekly_top_artists }}
+          WEEKLY_TOP_ALBUMS: ${{ inputs.weekly_top_albums }}
         run: |
           set -euo pipefail
           if [[ -z "${CRON_SECRET}" ]]; then
@@ -25,12 +62,33 @@ jobs:
             exit 1
           fi
 
+          chart_types='[]'
+          append_chart_type() {
+            chart_types="$(jq -c --arg chart "$1" '. + [$chart]' <<< "${chart_types}")"
+          }
+
+          if [[ "${DAILY_TOP_SONGS}" == "true" ]]; then append_chart_type "daily_top_songs"; fi
+          if [[ "${DAILY_VIRAL_SONGS}" == "true" ]]; then append_chart_type "daily_viral_songs"; fi
+          if [[ "${WEEKLY_TOP_SONGS}" == "true" ]]; then append_chart_type "weekly_top_songs"; fi
+          if [[ "${DAILY_TOP_ARTISTS}" == "true" ]]; then append_chart_type "daily_top_artists"; fi
+          if [[ "${WEEKLY_TOP_ARTISTS}" == "true" ]]; then append_chart_type "weekly_top_artists"; fi
+          if [[ "${WEEKLY_TOP_ALBUMS}" == "true" ]]; then append_chart_type "weekly_top_albums"; fi
+
+          if [[ "${chart_types}" == "[]" ]]; then
+            echo "No chart selected; loading all supported charts."
+          else
+            echo "Loading selected charts: $(jq -r 'join(", ")' <<< "${chart_types}")"
+          fi
+          request_body="$(jq -nc --argjson chartTypes "${chart_types}" '{chartTypes: $chartTypes}')"
+
           batch=0
           while true; do
             batch=$((batch + 1))
             response="$(curl --silent --show-error --fail-with-body --max-time 600 \
               --request POST \
               --header "Authorization: Bearer ${CRON_SECRET}" \
+              --header "Content-Type: application/json" \
+              --data "${request_body}" \
               "https://spotify-charts-scraper.vercel.app/api/collection/workflow")"
             echo "${response}" | jq .
 
