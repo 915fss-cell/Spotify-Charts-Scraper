@@ -17,6 +17,15 @@ MAX_CHART_KEYS_PER_TICK = 8
 COLLECTION_LEASE = timedelta(minutes=15)
 
 
+def normalize_chart_types(chart_types: list[str] | None) -> list[str]:
+    if not chart_types:
+        return list(CHART_STEPS)
+    selected = set(chart_types)
+    if selected.difference(CHART_STEPS):
+        raise HTTPException(status_code=400, detail="Choose only supported Spotify chart types.")
+    return [chart_type for chart_type in CHART_STEPS if chart_type in selected]
+
+
 def next_schedule_time(now: datetime, local_time: clock_time, timezone_name: str) -> datetime:
     zone = ZoneInfo(timezone_name)
     local_now = now.astimezone(zone)
@@ -212,10 +221,13 @@ async def run_collection_tick(
     source: str = "manual",
     max_chart_keys: int = MAX_CHART_KEYS_PER_TICK,
     include_history: bool = True,
+    chart_types: list[str] | None = None,
 ) -> dict[str, Any] | None:
     if source not in {"scheduled", "manual"}:
-        raise ValueError("Collection source must be scheduled or manual.")
+        raise ValueError("Collection source must be 'scheduled' or 'manual'.")
+    selected_chart_types = normalize_chart_types(chart_types)
     started = await _start_run(pool, source)
+
     if started is None:
         return None
     run_id, owner = started
@@ -267,7 +279,7 @@ async def run_collection_tick(
                      WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code),
                     c.chart_type, c.country_code
            LIMIT $2""",
-        list(CHART_STEPS),
+        selected_chart_types,
         max(0, max_chart_keys - history_completed - history_failed),
         include_history,
     )

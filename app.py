@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from chart_history import (
+    CHART_STEPS,
     ChartHistoryStorageError,
     close_history_pool,
     entry_entity_uri,
@@ -344,6 +345,10 @@ class ChartJobRetryInput(BaseModel):
     ]
     country_code: str = Field(min_length=2, max_length=6)
     requested_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class CollectionWorkflowInput(BaseModel):
+    chart_types: list[str] = Field(default_factory=list, max_length=len(CHART_STEPS), alias="chartTypes")
 
 
 CHART_METHODS = {
@@ -958,7 +963,9 @@ async def scheduled_collection_tick(request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/collection/workflow")
-async def repository_workflow_collection(request: Request) -> dict[str, Any]:
+async def repository_workflow_collection(
+    request: Request, selection: CollectionWorkflowInput | None = None
+) -> dict[str, Any]:
     secret = os.environ.get("CRON_SECRET") or os.environ.get("SPOTIFY_COLLECTION_CRON_SECRET")
     authorization = request.headers.get("authorization", "")
     supplied = authorization.removeprefix("Bearer ")
@@ -966,7 +973,11 @@ async def repository_workflow_collection(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Collection workflow authorization is invalid.")
     pool = await get_history_pool()
     result = await run_collection_tick(
-        pool, get_spotify_scraper, source="manual", include_history=False
+        pool,
+        get_spotify_scraper,
+        source="manual",
+        include_history=False,
+        chart_types=selection.chart_types if selection else None,
     )
     return result or {"status": "not_started"}
 
