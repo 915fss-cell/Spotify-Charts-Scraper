@@ -70,6 +70,8 @@ class RecordingPool:
 class RunLifecycleConnection:
     def __init__(self, schedule=None):
         self.schedule = schedule
+        self.job_claim = {"attempt_count": 1}
+        self.existing_status = None
         self.executed = []
         self.executemany_calls = []
         self.fetchval_calls = []
@@ -87,13 +89,15 @@ class RunLifecycleConnection:
         if "spotify_collection_schedule" in query:
             return self.schedule
         if "UPDATE public.spotify_chart_refresh_jobs" in query:
-            return {"attempt_count": 1}
+            return self.job_claim
         return None
 
     async def fetchval(self, query, *args):
         self.fetchval_calls.append((query, args))
         if "INSERT INTO public.spotify_collection_runs" in query:
             return 91
+        if "SELECT status FROM public.spotify_chart_refresh_jobs" in query:
+            return self.existing_status
         return None
 
     async def execute(self, query, *args):
@@ -505,6 +509,42 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(pool.fetch_queries), 1)
         self.assertNotIn("requested_date <> 'latest'", pool.fetch_queries[0])
         self.assertIn("NOT $3::boolean", pool.fetch_queries[0])
+
+    async def test_latest_refresh_marks_existing_chart_date_as_fetched_today(self):
+        config = {
+            "chart_type": "weekly_top_albums",
+            "country_code": "US",
+            "entity_uris": ["spotify:album:0123456789abcdef"],
+        }
+        pool = RunLifecyclePool(fetch_responses=[[config]])
+        pool.connection.job_claim = None
+        pool.connection.existing_status = "succeeded"
+
+        class Scraper:
+            requested = []
+
+            async def weekly_top_albums(self, country, requested_date):
+                self.requested.append((country, requested_date))
+                return {"displayChart": {"date": "2026-11-15"}, "entries": []}
+
+        scraper = Scraper()
+
+        async def scraper_factory():
+            return scraper
+
+        result = await run_collection_tick(
+            pool, scraper_factory, source="manual", max_chart_keys=1, include_history=False
+        )
+
+        self.assertEqual(result["requestedChartKeys"], 1)
+        self.assertEqual(result["completedChartKeys"], 1)
+        self.assertEqual(scraper.requested, [("US", "latest")])
+        freshness_update = next(
+            (query, args) for query, args in pool.connection.executed
+            if "SET fetched_at = now(), updated_at = now()" in query
+        )
+        self.assertIn("status IN ('succeeded', 'unavailable', 'complete')", freshness_update[0])
+        self.assertEqual(freshness_update[1], ("weekly_top_albums", "US", "2026-11-15"))
 
     async def test_latest_404_is_marked_unavailable_for_the_day(self):
         config = {
