@@ -6,7 +6,7 @@ import os
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import date as calendar_date, timedelta
+from datetime import date as calendar_date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode, urlsplit
@@ -349,6 +349,7 @@ class ChartJobRetryInput(BaseModel):
 
 class CollectionWorkflowInput(BaseModel):
     chart_types: list[str] = Field(default_factory=list, max_length=len(CHART_STEPS), alias="chartTypes")
+    workflow_started_at: datetime | None = Field(default=None, alias="workflowStartedAt")
 
 
 CHART_METHODS = {
@@ -1010,6 +1011,7 @@ async def repository_workflow_collection(
         source="manual",
         include_history=False,
         chart_types=selection.chart_types if selection else None,
+        refresh_after=selection.workflow_started_at if selection else None,
     )
     return result or {"status": "not_started"}
 
