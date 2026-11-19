@@ -754,13 +754,27 @@
           if (!pointsByRegion.has(item.country_code)) pointsByRegion.set(item.country_code, []);
           pointsByRegion.get(item.country_code).push(item);
         });
-        pointList.innerHTML = `<div class="history-entity-points-list">${[...pointsByRegion.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([region, points]) => {
-          const regionName = [...byId("history-detail-country").options].find((option) => option.value === region)?.textContent || region;
+        const regionOrder = (left, right) => {
+          if (left === "GLOBAL") return -1;
+          if (right === "GLOBAL") return 1;
+          return left.localeCompare(right);
+        };
+        pointList.innerHTML = `<div class="history-entity-points-list">${[...pointsByRegion.entries()].sort(([left], [right]) => regionOrder(left, right)).map(([region, points]) => {
+          const regionName = [...byId("history-detail-country").options].find((option) => option.value === region)?.textContent || (region === "GLOBAL" ? "Global" : region);
+          const sortedPoints = points.sort((left, right) => right.chart_date.localeCompare(left.chart_date));
+          const latest = sortedPoints[0];
+          const display = (value) => value == null ? "—" : Number(value).toLocaleString();
+          const metric = (label, value) => `<div class="history-point-metric"><span>${label}</span><strong>${escapeHtml(String(value ?? "—"))}</strong></div>`;
+          const regionSummary = `<div class="history-region-summary">${metric("Rank", `#${latest.chart_rank ?? "—"}`)}${metric("Movement", latest.previous_rank == null || latest.chart_rank == null ? "—" : latest.previous_rank > latest.chart_rank ? `↑${latest.previous_rank - latest.chart_rank}` : latest.previous_rank < latest.chart_rank ? `↓${latest.chart_rank - latest.previous_rank}` : "—")}${metric("Release date", entity.release_date || "—")}${metric("Peak", `#${latest.peak_rank ?? "—"}`)}${metric("Streak", `${display(latest.consecutive_appearances)} days`)}${metric("Total days on chart", display(latest.total_days))}${metric("First entry position", `#${latest.first_entry_position ?? "—"}`)}${metric("Streams", display(latest.daily_streams))}${metric("Total chart streams", display(latest.total_chart_streams))}</div>`;
           return `
-          <section class="history-region-group" aria-label="${escapeHtml(regionName)} chart history">
-            <header class="history-region-heading"><strong>${escapeHtml(region)} · ${escapeHtml(regionName)}</strong><span>${points.length.toLocaleString()} ${points.length === 1 ? "appearance" : "appearances"}</span></header>
-            <div class="history-region-entries">${points.sort((left, right) => right.chart_date.localeCompare(left.chart_date)).map((item) => `<div class="history-entity-point"><strong>${escapeHtml(item.chart_date)}</strong><span>Rank #${escapeHtml(item.chart_rank ?? "—")}</span><span>${item.stream_count == null ? "—" : Number(item.stream_count).toLocaleString()} streams</span></div>`).join("")}</div>
-          </section>`;
+          <details class="history-region-group" aria-label="${escapeHtml(regionName)} chart history">
+            <summary class="history-region-heading"><span><strong>${escapeHtml(region)} · ${escapeHtml(regionName)}</strong></span><span>${points.length.toLocaleString()} ${points.length === 1 ? "appearance" : "appearances"} <span aria-hidden="true">▾</span></span></summary>
+            ${regionSummary}
+            <div class="history-region-entries">${sortedPoints.map((item) => {
+              const movement = item.previous_rank == null || item.chart_rank == null ? "—" : item.previous_rank > item.chart_rank ? `↑${item.previous_rank - item.chart_rank}` : item.previous_rank < item.chart_rank ? `↓${item.chart_rank - item.previous_rank}` : "—";
+              return `<article class="history-entity-point"><strong class="history-point-date">${escapeHtml(item.chart_date)}</strong>${metric("Rank", `#${item.chart_rank ?? "—"}`)}${metric("Movement", movement)}${metric("Release date", entity.release_date || "—")}${metric("Peak", `#${item.peak_rank ?? "—"}`)}${metric("Streak", `${display(item.consecutive_appearances)} days`)}${metric("Total days on chart", display(item.total_days))}${metric("First entry position", `#${item.first_entry_position ?? "—"}`)}${metric("Streams", display(item.daily_streams))}${metric("Total chart streams", display(item.total_chart_streams))}</article>`;
+            }).join("")}</div>
+          </details>`;
         }).join("")}</div>`;
       } else {
         pointList.innerHTML = '<p class="history-empty-row">No saved chart history matches these filters.</p>';
