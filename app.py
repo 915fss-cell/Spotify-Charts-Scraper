@@ -945,6 +945,18 @@ async def start_manual_collection() -> dict[str, Any]:
     return result or {"status": "not_started"}
 
 
+@app.get("/api/collection/tick")
+async def scheduled_collection_tick(request: Request) -> dict[str, Any]:
+    secret = os.environ.get("CRON_SECRET") or os.environ.get("SPOTIFY_COLLECTION_CRON_SECRET")
+    authorization = request.headers.get("authorization", "")
+    supplied = authorization.removeprefix("Bearer ")
+    if not secret or not secrets.compare_digest(supplied, secret):
+        raise HTTPException(status_code=401, detail="Collection cron authorization is invalid.")
+    pool = await get_history_pool()
+    result = await run_collection_tick(pool, get_spotify_scraper, source="scheduled")
+    return result or {"status": "not_started"}
+
+
 @app.post("/api/collection/workflow")
 async def repository_workflow_collection(request: Request) -> dict[str, Any]:
     secret = os.environ.get("CRON_SECRET") or os.environ.get("SPOTIFY_COLLECTION_CRON_SECRET")
@@ -953,7 +965,9 @@ async def repository_workflow_collection(request: Request) -> dict[str, Any]:
     if not secret or not secrets.compare_digest(supplied, secret):
         raise HTTPException(status_code=401, detail="Collection workflow authorization is invalid.")
     pool = await get_history_pool()
-    result = await run_collection_tick(pool, get_spotify_scraper, source="manual")
+    result = await run_collection_tick(
+        pool, get_spotify_scraper, source="manual", include_history=False
+    )
     return result or {"status": "not_started"}
 
 

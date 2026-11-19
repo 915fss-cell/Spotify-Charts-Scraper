@@ -271,6 +271,38 @@ class HistoryDashboardTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_scheduled_collection_tick_is_a_get_route(self):
+        route = next(
+            route for route in app.app.routes
+            if getattr(route, "path", None) == "/api/collection/tick"
+        )
+        self.assertIn("GET", route.methods)
+        self.assertIs(route.endpoint, app.scheduled_collection_tick)
+
+    def test_scheduled_collection_tick_rejects_invalid_cron_secret(self):
+        async def run():
+            request = SimpleNamespace(headers={"authorization": "Bearer wrong-secret"})
+            with patch.dict(app.os.environ, {"CRON_SECRET": "expected-secret"}):
+                with self.assertRaises(app.HTTPException) as raised:
+                    await app.scheduled_collection_tick(request)
+            self.assertEqual(raised.exception.status_code, 401)
+
+        asyncio.run(run())
+
+    def test_scheduled_collection_tick_runs_as_scheduled_after_authentication(self):
+        async def run():
+            pool = HistoryPoolStub()
+            worker = AsyncMock(return_value={"id": 7, "source": "scheduled", "status": "succeeded"})
+            request = SimpleNamespace(headers={"authorization": "Bearer expected-secret"})
+            with patch.dict(app.os.environ, {"CRON_SECRET": "expected-secret"}), patch.object(
+                app, "get_history_pool", new=AsyncMock(return_value=pool)
+            ), patch.object(app, "run_collection_tick", new=worker):
+                result = await app.scheduled_collection_tick(request)
+            self.assertEqual(result["status"], "succeeded")
+            worker.assert_awaited_once_with(pool, app.get_spotify_scraper, source="scheduled")
+
+        asyncio.run(run())
+
     def test_repository_workflow_rejects_invalid_cron_secret(self):
         async def run():
             request = SimpleNamespace(headers={"authorization": "Bearer wrong-secret"})
@@ -291,7 +323,9 @@ class HistoryDashboardTests(unittest.TestCase):
             ), patch.object(app, "run_collection_tick", new=worker):
                 result = await app.repository_workflow_collection(request)
             self.assertEqual(result["status"], "succeeded")
-            worker.assert_awaited_once_with(pool, app.get_spotify_scraper, source="manual")
+            worker.assert_awaited_once_with(
+                pool, app.get_spotify_scraper, source="manual", include_history=False
+            )
 
         asyncio.run(run())
 

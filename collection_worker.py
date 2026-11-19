@@ -211,6 +211,7 @@ async def run_collection_tick(
     scraper_factory: Callable[[], Awaitable[SpotifyCharts]],
     source: str = "manual",
     max_chart_keys: int = MAX_CHART_KEYS_PER_TICK,
+    include_history: bool = True,
 ) -> dict[str, Any] | None:
     if source not in {"scheduled", "manual"}:
         raise ValueError("Collection source must be scheduled or manual.")
@@ -236,12 +237,16 @@ async def run_collection_tick(
             await _release_schedule(pool, owner)
         raise HTTPException(status_code=502, detail="Spotify authorization is unavailable for collection.") from error
 
-    history_completed, history_failed, history_errors = await _process_pending_history_jobs(
-        pool, scraper, owner, max_chart_keys
-    )
-    completed += history_completed
-    failed += history_failed
-    error_messages.extend(history_errors)
+    history_completed = 0
+    history_failed = 0
+    history_errors: list[str] = []
+    if include_history:
+        history_completed, history_failed, history_errors = await _process_pending_history_jobs(
+            pool, scraper, owner, max_chart_keys
+        )
+        completed += history_completed
+        failed += history_failed
+        error_messages.extend(history_errors)
     config_rows = await pool.fetch(
         """SELECT c.chart_type, c.country_code, array_agg(c.entity_uri ORDER BY c.entity_uri) AS entity_uris
            FROM public.spotify_chart_tracking_configs c
@@ -252,11 +257,11 @@ async def run_collection_tick(
                  AND j.status IN ('succeeded', 'complete', 'unavailable')
                  AND j.fetched_at::date = CURRENT_DATE
              )
-             AND NOT EXISTS (
+             AND (NOT $3::boolean OR NOT EXISTS (
                SELECT 1 FROM public.spotify_chart_refresh_jobs j
                WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code
                  AND j.status = 'retry' AND j.next_attempt_at > now()
-             )
+             ))
            GROUP BY c.chart_type, c.country_code
            ORDER BY (SELECT max(j.fetched_at) FROM public.spotify_chart_refresh_jobs j
                      WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code),
@@ -264,6 +269,7 @@ async def run_collection_tick(
            LIMIT $2""",
         list(CHART_STEPS),
         max(0, max_chart_keys - history_completed - history_failed),
+        include_history,
     )
     requested = history_completed + history_failed + len(config_rows)
 
@@ -297,10 +303,10 @@ async def run_collection_tick(
                                attempt_count = attempt_count + 1, updated_at = now()
                            WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3
                              AND status NOT IN ('succeeded', 'unavailable', 'complete')
-                             AND next_attempt_at <= now()
+                             AND (NOT $6::boolean OR next_attempt_at <= now())
                              AND (status <> 'running' OR lease_expires_at IS NULL OR lease_expires_at < now())
                            RETURNING attempt_count""",
-                        chart_type, country, requested_date, owner, COLLECTION_LEASE,
+                        chart_type, country, requested_date, owner, COLLECTION_LEASE, include_history,
                     )
                     if job is None:
                         existing_status = await connection.fetchval(
