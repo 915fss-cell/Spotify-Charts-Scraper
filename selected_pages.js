@@ -607,8 +607,8 @@
         : '<option value="">Save an entity first</option>';
       byId("tracking-country").innerHTML = '<option value="ALL">All supported regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
       byId("collection-job-country").innerHTML = '<option value="">All markets</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
-      byId("history-detail-country").innerHTML = '<option value="">All markets</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
-      byId("history-detail-chart").innerHTML = '<option value="">All charts</option>' + [
+      byId("history-detail-country").innerHTML = '<option value="">All regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+      byId("history-detail-chart").innerHTML = '<option value="">Choose a chart</option>' + [
         ["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"],
         ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"],
         ["weekly_top_albums", "Weekly top albums"],
@@ -678,6 +678,12 @@
   async function loadHistoryEntityDetail(entityUri = selectedHistoryEntityUri) {
     if (!entityUri) return;
     selectedHistoryEntityUri = entityUri;
+    try {
+      const countrySelect = byId("history-detail-country");
+    if (countrySelect.options.length < 2) {
+      const countries = await requestJson("/api/countries");
+      countrySelect.innerHTML = '<option value="">All regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+    }
     const params = new URLSearchParams({
       entity_uri: entityUri,
       limit: String(HISTORY_ENTITY_DETAIL_PAGE_SIZE),
@@ -692,19 +698,23 @@
     if (dateFrom) params.set("date_from", dateFrom);
     if (dateTo) params.set("date_to", dateTo);
 
-    try {
       const payload = await requestJson(`/api/history/entity?${params}`);
       const entity = payload.entity;
       const summary = payload.summary;
       byId("history-entity-detail").hidden = false;
-      byId("history-entity-detail-title").textContent = `${entity.entity_name} history`;
+      byId("history-entity-detail-title").textContent = chartType
+        ? `${entity.entity_name} · ${chartType.replaceAll("_", " ")}`
+        : `${entity.entity_name} history`;
+      byId("tracked-entity-trend").hidden = !chartType;
+      if (!chartType) byId("tracked-entity-trend").open = false;
       byId("history-entity-summary").textContent = `${Number(summary.appearances).toLocaleString()} appearances · peak #${summary.peak_rank ?? "—"} · ${summary.first_appearance || "—"} to ${summary.latest_appearance || "—"}${entity.is_archived ? " · archived" : ""}`;
+      byId("history-detail-country").disabled = !chartType;
       const items = [...payload.items].reverse();
       const labels = [...new Set(items.map((item) => item.chart_date))].sort();
       const series = [...new Set(items.map((item) => `${item.country_code} · ${item.chart_type.replaceAll("_", " ")}`))];
       const metric = byId("history-detail-metric").value;
       const valueFor = (item) => metric === "rank" ? item.chart_rank : item.stream_count;
-      const hasValues = items.some((item) => valueFor(item) != null);
+      const hasValues = Boolean(chartType) && items.some((item) => valueFor(item) != null);
       const canvas = byId("tracked-entity-chart");
       const empty = byId("tracked-entity-chart-empty");
       const legend = byId("tracked-entity-legend");
@@ -716,7 +726,9 @@
       }
       canvas.hidden = !hasValues;
       empty.hidden = hasValues;
-      empty.textContent = items.length ? "No stored values are available for the selected metric." : "No saved chart history matches these filters.";
+      empty.textContent = !chartType
+        ? "Choose a chart to see its trend."
+        : items.length ? "No stored values are available for the selected metric." : "No saved chart history matches these filters.";
       canvas.setAttribute("aria-label", `${metric === "rank" ? "Rank" : "Streams"} history for ${entity.entity_name}`);
       if (hasValues && window.Chart) {
         const colors = ["#187a45", "#3478c5", "#e37b26", "#8b5cc7", "#ca4f69", "#148b99"];
@@ -733,9 +745,28 @@
         legend.innerHTML = datasets.map((dataset, index) => `<button type="button" data-chart-series="${index}" aria-pressed="true"><span class="tracked-entity-legend-swatch" style="--series-color:${dataset.borderColor}"></span><span class="tracked-entity-legend-label">${escapeHtml(dataset.label)}</span></button>`).join("");
         legend.hidden = datasets.length === 0;
       }
-      byId("history-entity-points").innerHTML = payload.items.length ? payload.items.map((item) => `<div class="history-entity-point"><strong>${escapeHtml(item.chart_date)}</strong><span>${escapeHtml(item.country_code)}</span><span>${escapeHtml(item.chart_type.replaceAll("_", " "))}</span><span>#${escapeHtml(item.chart_rank ?? "—")} · ${item.stream_count == null ? "—" : Number(item.stream_count).toLocaleString()} streams</span></div>`).join("") : '<p class="history-empty-row">No saved chart history matches these filters.</p>';
+      const pointList = byId("history-entity-points");
+      if (!chartType) {
+        pointList.innerHTML = '<p class="history-empty-row">Choose a chart to view its saved appearances grouped by region.</p>';
+      } else if (payload.items.length) {
+        const pointsByRegion = new Map();
+        payload.items.forEach((item) => {
+          if (!pointsByRegion.has(item.country_code)) pointsByRegion.set(item.country_code, []);
+          pointsByRegion.get(item.country_code).push(item);
+        });
+        pointList.innerHTML = `<div class="history-entity-points-list">${[...pointsByRegion.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([region, points]) => {
+          const regionName = [...byId("history-detail-country").options].find((option) => option.value === region)?.textContent || region;
+          return `
+          <section class="history-region-group" aria-label="${escapeHtml(regionName)} chart history">
+            <header class="history-region-heading"><strong>${escapeHtml(region)} · ${escapeHtml(regionName)}</strong><span>${points.length.toLocaleString()} ${points.length === 1 ? "appearance" : "appearances"}</span></header>
+            <div class="history-region-entries">${points.sort((left, right) => right.chart_date.localeCompare(left.chart_date)).map((item) => `<div class="history-entity-point"><strong>${escapeHtml(item.chart_date)}</strong><span>Rank #${escapeHtml(item.chart_rank ?? "—")}</span><span>${item.stream_count == null ? "—" : Number(item.stream_count).toLocaleString()} streams</span></div>`).join("")}</div>
+          </section>`;
+        }).join("")}</div>`;
+      } else {
+        pointList.innerHTML = '<p class="history-empty-row">No saved chart history matches these filters.</p>';
+      }
       const pagination = byId("history-entity-detail-pagination");
-      pagination.hidden = payload.total <= HISTORY_ENTITY_DETAIL_PAGE_SIZE;
+      pagination.hidden = !chartType || payload.total <= HISTORY_ENTITY_DETAIL_PAGE_SIZE;
       byId("history-entity-detail-page-label").textContent = payload.total
         ? `${historyEntityDetailOffset + 1}–${historyEntityDetailOffset + payload.items.length} of ${Number(payload.total).toLocaleString()}`
         : "No appearances";
@@ -1072,6 +1103,12 @@
     historyEntityTrigger = button;
     button.textContent = "Close details";
     button.setAttribute("aria-expanded", "true");
+    byId("history-detail-chart").value = "";
+    byId("history-detail-country").value = "";
+    byId("history-detail-country").disabled = true;
+    byId("tracked-entity-trend").open = false;
+    byId("history-detail-from").value = "";
+    byId("history-detail-to").value = "";
     historyEntityDetailOffset = 0;
     void loadHistoryEntityDetail(button.dataset.historyEntity);
   });
@@ -1186,6 +1223,9 @@
   byId("history-entity-detail-next").addEventListener("click", () => {
     historyEntityDetailOffset += HISTORY_ENTITY_DETAIL_PAGE_SIZE;
     void loadHistoryEntityDetail();
+  });
+  byId("tracked-entity-trend").addEventListener("toggle", (event) => {
+    if (event.currentTarget.open) requestAnimationFrame(() => trackedEntityChart?.resize());
   });
   byId("tracking-config-form").addEventListener("submit", async (event) => {
     event.preventDefault();
