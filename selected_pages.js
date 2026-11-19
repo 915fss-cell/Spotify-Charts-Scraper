@@ -754,13 +754,18 @@
           if (!pointsByRegion.has(item.country_code)) pointsByRegion.set(item.country_code, []);
           pointsByRegion.get(item.country_code).push(item);
         });
-        pointList.innerHTML = `<div class="history-entity-points-list">${[...pointsByRegion.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([region, points]) => {
-          const regionName = [...byId("history-detail-country").options].find((option) => option.value === region)?.textContent || region;
+        const regionOrder = (left, right) => {
+          if (left === "GLOBAL") return -1;
+          if (right === "GLOBAL") return 1;
+          return left.localeCompare(right);
+        };
+        pointList.innerHTML = `<div class="history-entity-points-list">${[...pointsByRegion.entries()].sort(([left], [right]) => regionOrder(left, right)).map(([region, points]) => {
+          const regionName = [...byId("history-detail-country").options].find((option) => option.value === region)?.textContent || (region === "GLOBAL" ? "Global" : region);
           return `
-          <section class="history-region-group" aria-label="${escapeHtml(regionName)} chart history">
-            <header class="history-region-heading"><strong>${escapeHtml(region)} · ${escapeHtml(regionName)}</strong><span>${points.length.toLocaleString()} ${points.length === 1 ? "appearance" : "appearances"}</span></header>
+          <details class="history-region-group" aria-label="${escapeHtml(regionName)} chart history">
+            <summary class="history-region-heading" style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:12px"><span><strong>${escapeHtml(region)} · ${escapeHtml(regionName)}</strong></span><span>${points.length.toLocaleString()} ${points.length === 1 ? "appearance" : "appearances"} <span aria-hidden="true">▾</span></span></summary>
             <div class="history-region-entries">${points.sort((left, right) => right.chart_date.localeCompare(left.chart_date)).map((item) => `<div class="history-entity-point"><strong>${escapeHtml(item.chart_date)}</strong><span>Rank #${escapeHtml(item.chart_rank ?? "—")}</span><span>${item.stream_count == null ? "—" : Number(item.stream_count).toLocaleString()} streams</span></div>`).join("")}</div>
-          </section>`;
+          </details>`;
         }).join("")}</div>`;
       } else {
         pointList.innerHTML = '<p class="history-empty-row">No saved chart history matches these filters.</p>';
