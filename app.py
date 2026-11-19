@@ -965,7 +965,9 @@ async def repository_workflow_collection(request: Request) -> dict[str, Any]:
     if not secret or not secrets.compare_digest(supplied, secret):
         raise HTTPException(status_code=401, detail="Collection workflow authorization is invalid.")
     pool = await get_history_pool()
-    result = await run_collection_tick(pool, get_spotify_scraper, source="manual")
+    result = await run_collection_tick(
+        pool, get_spotify_scraper, source="manual", include_history=False
+    )
     return result or {"status": "not_started"}
 
 

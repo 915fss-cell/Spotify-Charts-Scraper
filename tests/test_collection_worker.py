@@ -464,6 +464,48 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(args[0], datetime.now(timezone.utc))
         self.assertEqual(args[1], "worker-1")
 
+    async def test_latest_only_collection_skips_history_queue(self):
+        uri = "spotify:track:0123456789abcdef"
+        config = {
+            "chart_type": "daily_top_songs",
+            "country_code": "US",
+            "entity_uris": [uri],
+        }
+        pool = RunLifecyclePool(fetch_responses=[[config]])
+
+        class Scraper:
+            requested_dates = []
+
+            async def daily_top_songs(self, country, requested_date):
+                self.requested_dates.append(requested_date)
+                return {
+                    "displayChart": {"date": "2026-11-19"},
+                    "entries": [{
+                        "trackMetadata": {"trackUri": uri, "trackName": "Example song"},
+                        "chartEntryData": {
+                            "rankingMetric": {"type": "STREAMS", "value": "12"},
+                            "currentRank": 1,
+                        },
+                    }],
+                }
+
+        scraper = Scraper()
+
+        async def scraper_factory():
+            return scraper
+
+        result = await run_collection_tick(
+            pool, scraper_factory, source="manual", max_chart_keys=1, include_history=False
+        )
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["requestedChartKeys"], 1)
+        self.assertEqual(result["completedChartKeys"], 1)
+        self.assertEqual(scraper.requested_dates, ["latest"])
+        self.assertEqual(len(pool.fetch_queries), 1)
+        self.assertNotIn("requested_date <> 'latest'", pool.fetch_queries[0])
+        self.assertIn("NOT $3::boolean", pool.fetch_queries[0])
+
     async def test_latest_404_is_marked_unavailable_for_the_day(self):
         config = {
             "chart_type": "weekly_top_albums",

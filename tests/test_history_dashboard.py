@@ -323,7 +323,9 @@ class HistoryDashboardTests(unittest.TestCase):
             ), patch.object(app, "run_collection_tick", new=worker):
                 result = await app.repository_workflow_collection(request)
             self.assertEqual(result["status"], "succeeded")
-            worker.assert_awaited_once_with(pool, app.get_spotify_scraper, source="manual")
+            worker.assert_awaited_once_with(
+                pool, app.get_spotify_scraper, source="manual", include_history=False
+            )
 
         asyncio.run(run())
 
