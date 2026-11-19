@@ -21,6 +21,22 @@ class FakeAsyncClient:
 
 
 class SpotifyChartRateLimitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chart_request_slots_are_two_seconds_apart(self):
+        previous_slot = spotify_charts._next_chart_request_at
+        spotify_charts._next_chart_request_at = 0.0
+        sleep = AsyncMock()
+
+        try:
+            with patch.object(spotify_charts, "monotonic", side_effect=[100.0, 100.25]), \
+                 patch.object(spotify_charts.asyncio, "sleep", new=sleep):
+                await spotify_charts._wait_for_chart_request_slot()
+                await spotify_charts._wait_for_chart_request_slot()
+
+            self.assertEqual(spotify_charts.CHART_REQUEST_INTERVAL, 2.0)
+            sleep.assert_awaited_once_with(1.75)
+        finally:
+            spotify_charts._next_chart_request_at = previous_slot
+
     async def test_429_without_retry_after_applies_shared_cooldown(self):
         url = "https://charts-spotify-com-service.spotify.com/test-rate-limit-fallback"
         request = httpx.Request("GET", url)

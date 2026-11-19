@@ -20,7 +20,7 @@ redirect_port = spotify_settings.redirect_port
 
 redirect_url = f"{redirect_uri}:{redirect_port}"
 CHART_CACHE_TTL = 300
-CHART_REQUEST_INTERVAL = 3.0
+CHART_REQUEST_INTERVAL = 2.0
 CHART_RATE_LIMIT_DEFAULT_COOLDOWN = 30.0
 CHART_RATE_LIMIT_MAX_COOLDOWN = 120.0
 _chart_cache: dict[str, tuple[float, dict]] = {}
