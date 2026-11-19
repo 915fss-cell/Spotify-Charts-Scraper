@@ -315,6 +315,13 @@ async def run_collection_tick(
                             chart_type, country, requested_date,
                         )
                         if existing_status in {"succeeded", "unavailable", "complete"}:
+                            await connection.execute(
+                                """UPDATE public.spotify_chart_refresh_jobs
+                                   SET fetched_at = now(), updated_at = now()
+                                   WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3
+                                     AND status IN ('succeeded', 'unavailable', 'complete')""",
+                                chart_type, country, requested_date,
+                            )
                             completed += 1
                             continue
                         raise RuntimeError("Chart date is already leased or waiting for retry.")
