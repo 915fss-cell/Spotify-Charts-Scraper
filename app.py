@@ -898,7 +898,7 @@ async def history_entity_detail(
              AND ($3::text IS NULL OR chart_type = $3)
              AND ($4::date IS NULL OR chart_date >= $4)
              AND ($5::date IS NULL OR chart_date <= $5)
-           ORDER BY chart_date DESC, country_code, chart_type
+           ORDER BY country_code, chart_date DESC, chart_type
            LIMIT $6 OFFSET $7""",
         *filters, limit, offset,
     )
