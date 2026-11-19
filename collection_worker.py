@@ -222,6 +222,7 @@ async def run_collection_tick(
     max_chart_keys: int = MAX_CHART_KEYS_PER_TICK,
     include_history: bool = True,
     chart_types: list[str] | None = None,
+    refresh_after: datetime | None = None,
 ) -> dict[str, Any] | None:
     if source not in {"scheduled", "manual"}:
         raise ValueError("Collection source must be 'scheduled' or 'manual'.")
@@ -267,7 +268,8 @@ async def run_collection_tick(
                SELECT 1 FROM public.spotify_chart_refresh_jobs j
                WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code
                  AND j.status IN ('succeeded', 'complete', 'unavailable')
-                 AND j.fetched_at::date = CURRENT_DATE
+                 AND (($4::timestamptz IS NULL AND j.fetched_at::date = CURRENT_DATE)
+                   OR ($4::timestamptz IS NOT NULL AND j.fetched_at >= $4::timestamptz))
              )
              AND (NOT $3::boolean OR NOT EXISTS (
                SELECT 1 FROM public.spotify_chart_refresh_jobs j
@@ -282,6 +284,7 @@ async def run_collection_tick(
         selected_chart_types,
         max(0, max_chart_keys - history_completed - history_failed),
         include_history,
+        refresh_after,
     )
     requested = history_completed + history_failed + len(config_rows)
 

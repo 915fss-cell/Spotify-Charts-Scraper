@@ -115,9 +115,11 @@ class RunLifecyclePool:
         self.connection = RunLifecycleConnection(schedule)
         self.executed = []
         self.fetch_queries = []
+        self.fetch_arguments = []
 
     async def fetch(self, query, *args):
         self.fetch_queries.append(query)
+        self.fetch_arguments.append(args)
         return self.fetch_responses.pop(0) if self.fetch_responses else []
 
     async def fetchrow(self, query, *args):
@@ -526,6 +528,42 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(pool.fetch_queries), 1)
         self.assertNotIn("requested_date <> 'latest'", pool.fetch_queries[0])
         self.assertIn("NOT $3::boolean", pool.fetch_queries[0])
+
+    async def test_workflow_refresh_cutoff_is_passed_to_config_selection(self):
+        uri = "spotify:track:0123456789abcdef"
+        config = {
+            "chart_type": "daily_top_songs",
+            "country_code": "US",
+            "entity_uris": [uri],
+        }
+        pool = RunLifecyclePool(fetch_responses=[[config]])
+        workflow_started_at = datetime(2026, 11, 19, 20, 0, tzinfo=timezone.utc)
+
+        class Scraper:
+            async def daily_top_songs(self, country, requested_date):
+                return {
+                    "displayChart": {"date": "2026-11-18"},
+                    "entries": [{
+                        "trackMetadata": {"trackUri": uri, "trackName": "Example song"},
+                        "chartEntryData": {"currentRank": 1},
+                    }],
+                }
+
+        async def scraper_factory():
+            return Scraper()
+
+        result = await run_collection_tick(
+            pool,
+            scraper_factory,
+            source="manual",
+            max_chart_keys=1,
+            include_history=False,
+            refresh_after=workflow_started_at,
+        )
+
+        self.assertEqual(result["completedChartKeys"], 1)
+        self.assertEqual(pool.fetch_arguments[0][3], workflow_started_at)
+        self.assertIn("j.fetched_at >= $4::timestamptz", pool.fetch_queries[0])
 
     async def test_latest_refresh_marks_existing_chart_date_as_fetched_today(self):
         config = {

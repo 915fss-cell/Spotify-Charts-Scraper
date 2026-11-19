@@ -79,7 +79,8 @@ jobs:
           else
             echo "Loading selected charts: $(jq -r 'join(", ")' <<< "${chart_types}")"
           fi
-          request_body="$(jq -nc --argjson chartTypes "${chart_types}" '{chartTypes: $chartTypes}')"
+          workflow_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          request_body="$(jq -nc --argjson chartTypes "${chart_types}" --arg workflowStartedAt "${workflow_started_at}" '{chartTypes: $chartTypes, workflowStartedAt: $workflowStartedAt}')"
 
           batch=0
           while true; do

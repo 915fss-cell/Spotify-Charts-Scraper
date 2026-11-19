@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -341,6 +341,7 @@ class HistoryDashboardTests(unittest.TestCase):
                 source="manual",
                 include_history=False,
                 chart_types=None,
+                refresh_after=None,
             )
 
         asyncio.run(run())
@@ -350,7 +351,11 @@ class HistoryDashboardTests(unittest.TestCase):
             pool = HistoryPoolStub()
             worker = AsyncMock(return_value={"id": 8, "source": "manual", "status": "succeeded"})
             request = SimpleNamespace(headers={"authorization": "Bearer expected-secret"})
-            selection = app.CollectionWorkflowInput(chartTypes=["daily_top_songs", "weekly_top_albums"])
+            workflow_started_at = datetime(2026, 11, 19, 20, 0, tzinfo=timezone.utc)
+            selection = app.CollectionWorkflowInput(
+                chartTypes=["daily_top_songs", "weekly_top_albums"],
+                workflowStartedAt=workflow_started_at.isoformat(),
+            )
             with patch.dict(app.os.environ, {"CRON_SECRET": "expected-secret"}), patch.object(
                 app, "get_history_pool", new=AsyncMock(return_value=pool)
             ), patch.object(app, "run_collection_tick", new=worker):
@@ -362,6 +367,7 @@ class HistoryDashboardTests(unittest.TestCase):
                 source="manual",
                 include_history=False,
                 chart_types=["daily_top_songs", "weekly_top_albums"],
+                refresh_after=workflow_started_at,
             )
 
         asyncio.run(run())
