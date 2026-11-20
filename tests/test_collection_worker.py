@@ -146,19 +146,34 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalize_chart_types(None), ["daily_top_songs"])
         self.assertEqual(normalize_chart_types([]), ["daily_top_songs"])
 
-    async def test_empty_workflow_selection_fetches_full_daily_song_chart_for_every_market(self):
+    async def test_all_market_daily_song_workflow_saves_only_selected_entities(self):
+        selected_track_uri = "spotify:track:0123456789abcdef"
+        artist_uri = "spotify:artist:fedcba9876543210"
         payload = {
             "displayChart": {"date": "2026-11-19"},
-            "entries": [{
-                "trackMetadata": {
-                    "trackUri": "spotify:track:0123456789abcdef",
-                    "trackName": "Example song",
+            "entries": [
+                {
+                    "trackMetadata": {
+                        "trackUri": selected_track_uri,
+                        "trackName": "Selected song",
+                        "artists": [{"spotifyUri": artist_uri, "name": "Selected artist"}],
+                    },
+                    "chartEntryData": {
+                        "currentRank": 1,
+                        "rankingMetric": {"type": "STREAMS", "value": "1234"},
+                    },
                 },
-                "chartEntryData": {
-                    "currentRank": 1,
-                    "rankingMetric": {"type": "STREAMS", "value": "1234"},
+                {
+                    "trackMetadata": {
+                        "trackUri": "spotify:track:unselected000000",
+                        "trackName": "Unselected song",
+                    },
+                    "chartEntryData": {
+                        "currentRank": 2,
+                        "rankingMetric": {"type": "STREAMS", "value": "567"},
+                    },
                 },
-            }],
+            ],
         }
 
         class Scraper:
@@ -168,7 +183,7 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         pool = RunLifecyclePool(fetch_responses=[[{
             "chart_type": "daily_top_songs",
             "country_code": "GLOBAL",
-            "entity_uris": None,
+            "entity_uris": [selected_track_uri, artist_uri],
         }]])
 
         async def scraper_factory():
@@ -185,11 +200,14 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["requestedChartKeys"], 1)
         query = pool.fetch_queries[0]
         self.assertIn("unnest($5::text[])", query)
-        self.assertNotIn("spotify_chart_tracking_configs", query)
+        self.assertIn("spotify_chart_selections", query)
+        self.assertIn("is_archived = false", query)
         self.assertEqual(pool.fetch_arguments[0][0], ["daily_top_songs"])
         self.assertIn("GLOBAL", pool.fetch_arguments[0][4])
         self.assertIn("US", pool.fetch_arguments[0][4])
-        self.assertEqual(len(pool.connection.executemany_calls[0][1]), 1)
+        saved_rows = pool.connection.executemany_calls[0][1]
+        self.assertEqual(len(saved_rows), 1)
+        self.assertEqual(saved_rows[0][3], selected_track_uri)
 
     def test_chart_selection_filters_and_deduplicates_supported_charts(self):
         self.assertEqual(
