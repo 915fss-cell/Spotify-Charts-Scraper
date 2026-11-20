@@ -130,8 +130,8 @@
             <div class="field"><label for="tracking-entity">Tracked entity</label><select id="tracking-entity" required></select></div>
             <div class="field"><label for="tracking-chart">Chart</label><select id="tracking-chart" required><option value="daily_top_songs">Daily top songs</option><option value="weekly_top_songs">Weekly top songs</option><option value="daily_top_artists">Daily top artists</option><option value="weekly_top_artists">Weekly top artists</option></select></div>
             <div class="field"><label for="tracking-country">Market</label><select id="tracking-country" required></select></div>
-            <div class="field"><label for="tracking-start-date">Backfill from</label><input id="tracking-start-date" type="date" /></div>
-            <button class="load-button" type="submit">Save tracking</button>
+            <div class="field"><label for="tracking-start-date">Backfill from</label><input id="tracking-start-date" type="date" required /></div>
+            <button class="load-button" type="submit">Start tracker</button>
           </form>
           <div class="chart-head"><span class="chart-title">Historical backfill queue</span><div class="focus-header-actions"><button class="quiet-button" id="backfill-run-all" type="button">Run all pending backfills</button><button class="quiet-button" id="backfill-pause" type="button" hidden>Pause after this batch</button></div></div>
           <p class="page-status" id="backfill-runner-status" role="status" aria-live="polite">Backfill runs are manual and can be resumed from saved progress.</p>

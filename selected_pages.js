@@ -1092,24 +1092,57 @@
   });
   byId("tracking-config-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const form = event.currentTarget;
+    if (!form.reportValidity()) return;
     const entity = byId("tracking-entity").selectedOptions[0];
-    if (!entity?.value) return;
+    const chartType = byId("tracking-chart").value;
+    const country = byId("tracking-country").value;
+    const startDate = byId("tracking-start-date").value;
+    const submitButton = form.querySelector('button[type="submit"]');
+    if (!entity?.value || !startDate || submitButton.disabled) return;
+    submitButton.disabled = true;
+    submitButton.textContent = "Starting tracker…";
     try {
       await requestJson("/api/tracking/configs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           entity_uri: entity.value,
-          chart_type: byId("tracking-chart").value,
-          country_code: byId("tracking-country").value,
+          chart_type: chartType,
+          country_code: country,
           enabled: true,
-          backfill_start_date: byId("tracking-start-date").value || null,
+          backfill_start_date: startDate,
         }),
       });
-      setStatus("collection-status", "Tracking configuration saved.");
+      const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
+      const chart = await requestJson(`/api/charts?${chartParams}`);
+      const targetDate = chart.displayChart?.date;
+      if (!targetDate) throw new Error("Tracking is saved, but Spotify did not return a chart date to start the backfill.");
+      const progress = await requestJson("/api/chart-history/backfill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chart_type: chartType,
+          country,
+          start_date: startDate,
+          target_date: String(targetDate).slice(0, 10),
+          entity_uris: [entity.value],
+          target_entity_uris: [entity.value],
+        }),
+      });
+      const processed = Number(progress.processedDates || 0);
+      const total = Number(progress.totalDates || 0);
+      const result = progress.complete
+        ? `Backfill complete: ${processed} of ${total} chart dates processed.`
+        : `Backfill started: ${processed} of ${total} chart dates processed so far.`;
+      setStatus("collection-status", `Tracker is on for ${entity.textContent}. ${result}`);
       await loadHistoryManagement();
     } catch (error) {
       setStatus("collection-status", error.message, true);
+      await loadHistoryManagement();
+    } finally {
+      submitButton.disabled = false;
+      submitButton.textContent = "Start tracker";
     }
   });
   byId("tracking-config-list").addEventListener("click", async (event) => {
