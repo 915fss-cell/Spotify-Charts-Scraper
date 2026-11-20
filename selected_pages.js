@@ -1090,6 +1090,11 @@
   byId("tracked-entity-trend").addEventListener("toggle", (event) => {
     if (event.currentTarget.open) requestAnimationFrame(() => trackedEntityChart?.resize());
   });
+  const setTrackingRunStatus = (message, state) => {
+    const status = byId("tracking-run-status");
+    status.textContent = message;
+    status.dataset.state = state;
+  };
   byId("tracking-config-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1107,10 +1112,12 @@
     submitButton.disabled = true;
     submitButton.textContent = "Starting tracker…";
     let completedMarkets = 0;
+    setTrackingRunStatus(`Running · Preparing ${markets.length.toLocaleString()} ${markets.length === 1 ? "market" : "markets"} for ${entity.textContent}.`, "running");
     try {
       for (const [index, marketOption] of markets.entries()) {
         const country = marketOption.value;
         const marketName = marketOption.textContent;
+        setTrackingRunStatus(`Running · Fetching the latest chart for ${marketName} (${index + 1} of ${markets.length}).`, "running");
         const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
         const chart = await requestJson(`/api/charts?${chartParams}`);
         const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
@@ -1144,9 +1151,9 @@
           progress = await requestJson("/api/chart-history/backfill", backfillRequest);
           const processed = Number(progress.processedDates || 0);
           const total = Number(progress.totalDates || 0);
-          setStatus(
-            "collection-status",
-            `Tracking ${entity.textContent} in ${marketName} (${index + 1} of ${markets.length}). Backfilled ${processed} of ${total} chart dates${progress.complete ? "." : "…"}`,
+          setTrackingRunStatus(
+            `Running · ${marketName} (${index + 1} of ${markets.length} markets) · Backfilled ${processed} of ${total} chart dates${progress.complete ? "." : "…"}`,
+            "running",
           );
           if (progress.error) {
             throw new Error(`Backfill paused in ${marketName} after a fetch error. Saved progress is safe to resume.`);
@@ -1154,10 +1161,13 @@
           if (!progress.complete) await new Promise((resolve) => window.setTimeout(resolve, 2000));
         } while (!progress.complete);
         completedMarkets += 1;
+        setTrackingRunStatus(`Running · ${completedMarkets} of ${markets.length} markets complete.`, "running");
       }
+      setTrackingRunStatus(`Done · Tracker active in ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market" : "markets"}. Historical backfill is complete.`, "done");
       setStatus("collection-status", `Tracker is on for ${entity.textContent} in ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market" : "markets"}. Historical backfill is complete.`);
       await loadHistoryManagement();
     } catch (error) {
+      setTrackingRunStatus(`Stopped · ${error.message}`, "error");
       setStatus("collection-status", error.message, true);
       await loadHistoryManagement();
     } finally {
