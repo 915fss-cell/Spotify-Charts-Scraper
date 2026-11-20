@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       daily_top_songs:
-        description: Daily top songs (leave all unchecked to load every chart)
+        description: Daily top songs (leave all unchecked to load Global and every region)
         type: boolean
         required: false
         default: false
@@ -75,7 +75,7 @@ jobs:
           if [[ "${WEEKLY_TOP_ALBUMS}" == "true" ]]; then append_chart_type "weekly_top_albums"; fi
 
           if [[ "${chart_types}" == "[]" ]]; then
-            echo "No chart selected; loading all supported charts."
+            echo "No chart selected; loading Daily top songs for Global and every region."
           else
             echo "Loading selected charts: $(jq -r 'join(", ")' <<< "${chart_types}")"
           fi

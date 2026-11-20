@@ -130,8 +130,8 @@
             <div class="field"><label for="tracking-entity">Tracked entity</label><select id="tracking-entity" required></select></div>
             <div class="field"><label for="tracking-chart">Chart</label><select id="tracking-chart" required><option value="daily_top_songs">Daily top songs</option><option value="weekly_top_songs">Weekly top songs</option><option value="daily_top_artists">Daily top artists</option><option value="weekly_top_artists">Weekly top artists</option></select></div>
             <div class="field"><label for="tracking-country">Market</label><select id="tracking-country" required></select></div>
-            <div class="field"><label for="tracking-start-date">Backfill from</label><input id="tracking-start-date" type="date" /></div>
-            <button class="load-button" type="submit">Save tracking</button>
+            <div class="field"><label for="tracking-start-date">Backfill from</label><input id="tracking-start-date" type="date" required /></div>
+            <button class="load-button" type="submit">Start tracker</button>
           </form>
           <div class="chart-head"><span class="chart-title">Historical backfill queue</span><div class="focus-header-actions"><button class="quiet-button" id="backfill-run-all" type="button">Run all pending backfills</button><button class="quiet-button" id="backfill-pause" type="button" hidden>Pause after this batch</button></div></div>
           <p class="page-status" id="backfill-runner-status" role="status" aria-live="polite">Backfill runs are manual and can be resumed from saved progress.</p>
@@ -214,14 +214,6 @@
             <nav class="history-pagination" id="history-entity-detail-pagination" aria-label="Entity history pages" hidden><button class="quiet-button" id="history-entity-detail-previous" type="button">Previous</button><span id="history-entity-detail-page-label" aria-live="polite"></span><button class="quiet-button" id="history-entity-detail-next" type="button">Next</button></nav>
           </section>
         </section>
-        <div class="focus-toolbar" id="history-chart-controls" aria-label="History chart controls">
-          <div class="focus-toolbar-row"><div class="focus-control-group" id="history-cadence-control" role="group" aria-label="Chart cadence"><span class="focus-control-label">Cadence</span><div class="focus-segmented"><button class="focus-tab" type="button" data-focus-key="cadence" data-focus-value="daily" aria-pressed="true">Daily</button><button class="focus-tab" type="button" data-focus-key="cadence" data-focus-value="weekly" aria-pressed="false">Weekly</button></div></div><div class="field focus-history-range"><label for="history-range">History range</label><select id="history-range"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="365">1 year</option><option value="all">All available</option></select></div></div>
-          <div class="focus-toolbar-row">
-            <div class="focus-control-group" role="group" aria-label="Chart view"><span class="focus-control-label">View</span><div class="focus-segmented"><button class="focus-tab" type="button" data-focus-key="view" data-focus-value="release" aria-pressed="true">Release</button><button class="focus-tab" type="button" data-focus-key="view" data-focus-value="region" aria-pressed="false">Region</button></div></div>
-            <div class="focus-control-group" id="history-entity-control" role="group" aria-label="Release chart type"><span class="focus-control-label">Chart type</span><div class="focus-segmented"><button class="focus-tab" type="button" data-focus-key="entityType" data-focus-value="track" aria-pressed="true">Song</button><button class="focus-tab" type="button" data-focus-key="entityType" data-focus-value="artist" aria-pressed="false">Artist</button><button class="focus-tab" type="button" data-focus-key="entityType" data-focus-value="album" aria-pressed="false">Album</button></div></div>
-            <div class="field focus-history-metric"><label for="history-metric">Trend metric</label><select id="history-metric"><option value="streams">Chart streams</option><option value="rank">Chart rank</option></select></div>
-          </div>
-        </div>
         <section class="chart-card history-calendar-card focused-history-calendar" id="focus-history-calendar" aria-labelledby="focus-history-calendar-title">
           <div class="chart-head history-calendar-head">
             <div><span class="chart-title" id="focus-history-calendar-title">Saved dates for this chart</span><p class="history-calendar-description">Choose a date to view this chart&apos;s saved results.</p></div>
@@ -248,16 +240,6 @@
               <span id="focus-history-calendar-results-page-label" aria-live="polite"></span>
               <button class="quiet-button" id="focus-history-calendar-results-next" type="button">Next</button>
             </nav>
-          </section>
-        </section>
-        <section class="focused-history-results" id="focused-history-results" aria-labelledby="history-results-title">
-          <p class="page-status" id="selected-history-status" role="status" aria-live="polite">Loading saved chart snapshots…</p>
-          <div class="focus-results-head"><h2 id="history-results-title">Selected chart history</h2><span class="focus-results-meta" id="history-results-count">Loading snapshots…</span></div>
-          <div class="focus-card-grid" id="history-results" aria-live="polite"></div>
-          <nav class="history-pagination" id="history-pagination" aria-label="History result pages" hidden><button class="quiet-button" id="history-page-previous" type="button">Previous</button><span id="history-page-label" aria-live="polite"></span><button class="quiet-button" id="history-page-next" type="button">Next</button></nav>
-          <section class="chart-card history-chart-card" id="history-chart-card" aria-labelledby="history-chart-title" hidden>
-            <div class="chart-head"><span class="chart-title" id="history-chart-title">Selected chart history by region</span><span class="chart-date" id="history-chart-range">Choose a release to view its trend</span></div>
-            <div class="history-chart-wrap"><canvas id="history-chart" role="img" aria-label="Historical chart metrics by region for the selected release" hidden></canvas><p id="history-empty" class="history-empty">Choose a release below to compare its chart history across regions.</p></div>
           </section>
         </section>
       </main>
@@ -556,6 +538,6 @@
       Promise.all([loadCountries(), loadStatus()]).catch((error) => showBanner(error.message, true));
     </script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" defer></script>
-    <script src="/selected-pages.js?v=selection-history-diagnostics-4" defer></script>
+    <script src="/selected-pages.js?v=history-loaders-5" defer></script>
   </body>
 </html>

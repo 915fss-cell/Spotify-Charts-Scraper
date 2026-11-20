@@ -342,6 +342,7 @@ class HistoryDashboardTests(unittest.TestCase):
                 include_history=False,
                 chart_types=None,
                 refresh_after=None,
+                all_markets_for_daily_songs=True,
             )
 
         asyncio.run(run())
@@ -368,6 +369,29 @@ class HistoryDashboardTests(unittest.TestCase):
                 include_history=False,
                 chart_types=["daily_top_songs", "weekly_top_albums"],
                 refresh_after=workflow_started_at,
+                all_markets_for_daily_songs=False,
+            )
+
+        asyncio.run(run())
+
+    def test_repository_workflow_empty_selection_requests_all_daily_song_markets(self):
+        async def run():
+            pool = HistoryPoolStub()
+            worker = AsyncMock(return_value={"id": 9, "source": "manual", "status": "succeeded"})
+            request = SimpleNamespace(headers={"authorization": "Bearer expected-secret"})
+            selection = app.CollectionWorkflowInput(chartTypes=[])
+            with patch.dict(app.os.environ, {"CRON_SECRET": "expected-secret"}), patch.object(
+                app, "get_history_pool", new=AsyncMock(return_value=pool)
+            ), patch.object(app, "run_collection_tick", new=worker):
+                await app.repository_workflow_collection(request, selection)
+            worker.assert_awaited_once_with(
+                pool,
+                app.get_spotify_scraper,
+                source="manual",
+                include_history=False,
+                chart_types=[],
+                refresh_after=None,
+                all_markets_for_daily_songs=True,
             )
 
         asyncio.run(run())

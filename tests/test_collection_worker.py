@@ -3,7 +3,7 @@ from datetime import date, datetime, time, timedelta, timezone
 import httpx
 from fastapi import HTTPException
 
-from chart_history import CHART_STEPS, save_chart_snapshot, snapshot_values
+from chart_history import save_chart_snapshot, snapshot_values
 from collection_worker import (
     _process_pending_history_jobs,
     _release_schedule,
@@ -142,9 +142,54 @@ class RunLifecyclePool:
 
 
 class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
-    def test_empty_chart_selection_defaults_to_all_supported_charts(self):
-        self.assertEqual(normalize_chart_types(None), list(CHART_STEPS))
-        self.assertEqual(normalize_chart_types([]), list(CHART_STEPS))
+    def test_empty_chart_selection_defaults_to_daily_top_songs(self):
+        self.assertEqual(normalize_chart_types(None), ["daily_top_songs"])
+        self.assertEqual(normalize_chart_types([]), ["daily_top_songs"])
+
+    async def test_empty_workflow_selection_fetches_full_daily_song_chart_for_every_market(self):
+        payload = {
+            "displayChart": {"date": "2026-11-19"},
+            "entries": [{
+                "trackMetadata": {
+                    "trackUri": "spotify:track:0123456789abcdef",
+                    "trackName": "Example song",
+                },
+                "chartEntryData": {
+                    "currentRank": 1,
+                    "rankingMetric": {"type": "STREAMS", "value": "1234"},
+                },
+            }],
+        }
+
+        class Scraper:
+            async def daily_top_songs(self, country, requested_date):
+                return payload
+
+        pool = RunLifecyclePool(fetch_responses=[[{
+            "chart_type": "daily_top_songs",
+            "country_code": "GLOBAL",
+            "entity_uris": None,
+        }]])
+
+        async def scraper_factory():
+            return Scraper()
+
+        result = await run_collection_tick(
+            pool,
+            scraper_factory,
+            include_history=False,
+            max_chart_keys=1,
+            all_markets_for_daily_songs=True,
+        )
+
+        self.assertEqual(result["requestedChartKeys"], 1)
+        query = pool.fetch_queries[0]
+        self.assertIn("unnest($5::text[])", query)
+        self.assertNotIn("spotify_chart_tracking_configs", query)
+        self.assertEqual(pool.fetch_arguments[0][0], ["daily_top_songs"])
+        self.assertIn("GLOBAL", pool.fetch_arguments[0][4])
+        self.assertIn("US", pool.fetch_arguments[0][4])
+        self.assertEqual(len(pool.connection.executemany_calls[0][1]), 1)
 
     def test_chart_selection_filters_and_deduplicates_supported_charts(self):
         self.assertEqual(
