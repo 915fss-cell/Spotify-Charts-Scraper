@@ -19,7 +19,7 @@ COLLECTION_LEASE = timedelta(minutes=15)
 
 def normalize_chart_types(chart_types: list[str] | None) -> list[str]:
     if not chart_types:
-        return list(CHART_STEPS)
+        return ["daily_top_songs"]
     selected = set(chart_types)
     if selected.difference(CHART_STEPS):
         raise HTTPException(status_code=400, detail="Choose only supported Spotify chart types.")

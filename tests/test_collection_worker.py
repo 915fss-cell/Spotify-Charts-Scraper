@@ -3,7 +3,7 @@ from datetime import date, datetime, time, timedelta, timezone
 import httpx
 from fastapi import HTTPException
 
-from chart_history import CHART_STEPS, save_chart_snapshot, snapshot_values
+from chart_history import save_chart_snapshot, snapshot_values
 from collection_worker import (
     _process_pending_history_jobs,
     _release_schedule,
@@ -142,9 +142,9 @@ class RunLifecyclePool:
 
 
 class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
-    def test_empty_chart_selection_defaults_to_all_supported_charts(self):
-        self.assertEqual(normalize_chart_types(None), list(CHART_STEPS))
-        self.assertEqual(normalize_chart_types([]), list(CHART_STEPS))
+    def test_empty_chart_selection_defaults_to_daily_top_songs(self):
+        self.assertEqual(normalize_chart_types(None), ["daily_top_songs"])
+        self.assertEqual(normalize_chart_types([]), ["daily_top_songs"])
 
     def test_chart_selection_filters_and_deduplicates_supported_charts(self):
         self.assertEqual(
