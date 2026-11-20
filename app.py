@@ -1012,6 +1012,7 @@ async def repository_workflow_collection(
         include_history=False,
         chart_types=selection.chart_types if selection else None,
         refresh_after=selection.workflow_started_at if selection else None,
+        all_markets_for_daily_songs=not selection or not selection.chart_types,
     )
     return result or {"status": "not_started"}
 

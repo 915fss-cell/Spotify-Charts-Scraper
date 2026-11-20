@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 import httpx
 from fastapi import HTTPException
+from Countries import Countries
 
 from chart_history import CHART_STEPS, parse_chart_date, save_chart_snapshot
 from spotify_charts import SpotifyCharts, parse_retry_after_delay
@@ -224,7 +225,7 @@ async def _persist_chart_response(
     response_date: date,
     payload: dict[str, Any],
     entries: list[dict[str, Any]],
-    entity_uris: set[str],
+    entity_uris: set[str] | None,
     cache_as_latest: bool = False,
 ) -> None:
     cache_keys = [requested_date]
@@ -252,7 +253,10 @@ async def _persist_chart_response(
         entries,
         allowed_entity_uris=entity_uris,
         connection=connection,
-        allowed_artist_uris={uri for uri in entity_uris if uri.startswith("spotify:artist:")},
+        allowed_artist_uris=(
+            {uri for uri in entity_uris if uri.startswith("spotify:artist:")}
+            if entity_uris is not None else None
+        ),
     )
 
 
@@ -264,6 +268,7 @@ async def run_collection_tick(
     include_history: bool = True,
     chart_types: list[str] | None = None,
     refresh_after: datetime | None = None,
+    all_markets_for_daily_songs: bool = False,
 ) -> dict[str, Any] | None:
     if source not in {"scheduled", "manual"}:
         raise ValueError("Collection source must be 'scheduled' or 'manual'.")
@@ -301,32 +306,62 @@ async def run_collection_tick(
         completed += history_completed
         failed += history_failed
         error_messages.extend(history_errors)
-    config_rows = await pool.fetch(
-        """SELECT c.chart_type, c.country_code, array_agg(c.entity_uri ORDER BY c.entity_uri) AS entity_uris
-           FROM public.spotify_chart_tracking_configs c
-           WHERE c.enabled = true AND c.chart_type = ANY($1::text[])
-             AND NOT EXISTS (
-               SELECT 1 FROM public.spotify_chart_refresh_jobs j
-               WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code
-                 AND j.status IN ('succeeded', 'complete', 'unavailable')
-                 AND (($4::timestamptz IS NULL AND j.fetched_at::date = CURRENT_DATE)
-                   OR ($4::timestamptz IS NOT NULL AND j.fetched_at >= $4::timestamptz))
-             )
-             AND (NOT $3::boolean OR NOT EXISTS (
-               SELECT 1 FROM public.spotify_chart_refresh_jobs j
-               WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code
-                 AND j.status = 'retry' AND j.next_attempt_at > now()
-             ))
-           GROUP BY c.chart_type, c.country_code
-           ORDER BY (SELECT max(j.fetched_at) FROM public.spotify_chart_refresh_jobs j
-                     WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code),
-                    c.chart_type, c.country_code
-           LIMIT $2""",
-        selected_chart_types,
-        max(0, max_chart_keys - history_completed - history_failed),
-        include_history,
-        refresh_after,
-    )
+    remaining_chart_keys = max(0, max_chart_keys - history_completed - history_failed)
+    if all_markets_for_daily_songs:
+        config_rows = await pool.fetch(
+            """SELECT 'daily_top_songs'::text AS chart_type, markets.country_code,
+                      NULL::text[] AS entity_uris
+               FROM unnest($5::text[]) AS markets(country_code)
+               WHERE 'daily_top_songs' = ANY($1::text[])
+                 AND NOT EXISTS (
+                 SELECT 1 FROM public.spotify_chart_refresh_jobs j
+                 WHERE j.chart_type = 'daily_top_songs' AND j.country_code = markets.country_code
+                   AND j.status IN ('succeeded', 'complete', 'unavailable')
+                   AND (($4::timestamptz IS NULL AND j.fetched_at::date = CURRENT_DATE)
+                     OR ($4::timestamptz IS NOT NULL AND j.fetched_at >= $4::timestamptz))
+               )
+                 AND (NOT $3::boolean OR NOT EXISTS (
+                   SELECT 1 FROM public.spotify_chart_refresh_jobs j
+                   WHERE j.chart_type = 'daily_top_songs' AND j.country_code = markets.country_code
+                     AND j.status = 'retry' AND j.next_attempt_at > now()
+                 ))
+               ORDER BY (SELECT max(j.fetched_at) FROM public.spotify_chart_refresh_jobs j
+                         WHERE j.chart_type = 'daily_top_songs' AND j.country_code = markets.country_code),
+                        markets.country_code
+               LIMIT $2""",
+            selected_chart_types,
+            remaining_chart_keys,
+            include_history,
+            refresh_after,
+            [country.value for country in Countries],
+        )
+    else:
+        config_rows = await pool.fetch(
+            """SELECT c.chart_type, c.country_code, array_agg(c.entity_uri ORDER BY c.entity_uri) AS entity_uris
+               FROM public.spotify_chart_tracking_configs c
+               WHERE c.enabled = true AND c.chart_type = ANY($1::text[])
+                 AND NOT EXISTS (
+                   SELECT 1 FROM public.spotify_chart_refresh_jobs j
+                   WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code
+                     AND j.status IN ('succeeded', 'complete', 'unavailable')
+                     AND (($4::timestamptz IS NULL AND j.fetched_at::date = CURRENT_DATE)
+                       OR ($4::timestamptz IS NOT NULL AND j.fetched_at >= $4::timestamptz))
+                 )
+                 AND (NOT $3::boolean OR NOT EXISTS (
+                   SELECT 1 FROM public.spotify_chart_refresh_jobs j
+                   WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code
+                     AND j.status = 'retry' AND j.next_attempt_at > now()
+                 ))
+               GROUP BY c.chart_type, c.country_code
+               ORDER BY (SELECT max(j.fetched_at) FROM public.spotify_chart_refresh_jobs j
+                         WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code),
+                        c.chart_type, c.country_code
+               LIMIT $2""",
+            selected_chart_types,
+            remaining_chart_keys,
+            include_history,
+            refresh_after,
+        )
     requested = history_completed + history_failed + len(config_rows)
 
     for config in config_rows:
@@ -344,7 +379,10 @@ async def run_collection_tick(
                 raise ValueError("Spotify returned a chart without a valid date and entries.")
 
             requested_date = response_date.isoformat()
-            entity_uris = set(config["entity_uris"])
+            entity_uris = (
+                set(config["entity_uris"])
+                if config["entity_uris"] is not None else None
+            )
             async with pool.acquire() as connection:
                 async with connection.transaction():
                     await connection.execute(
