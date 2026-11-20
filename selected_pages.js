@@ -859,7 +859,13 @@
       else link.removeAttribute("aria-current");
     });
     if (validPage === "live") loadFocusedLive();
-    if (validPage === "history") loadFocusedHistory();
+    if (validPage === "history") {
+      loadFocusedHistory();
+      if (page === "history") {
+        void loadHistoryCalendar(historyCalendarContexts.all);
+        void loadHistoryEntities();
+      }
+    }
     if (validPage === "collection") void loadHistoryManagement();
   }
 
@@ -894,6 +900,10 @@
       });
     });
   byId("history-refresh").addEventListener("click", () => {
+    if (location.hash === "#history") {
+      void loadHistoryCalendar(historyCalendarContexts.all);
+      void loadHistoryEntities();
+    }
     loadFocusedHistory(true);
   });
   byId("collection-refresh").addEventListener("click", () => {
