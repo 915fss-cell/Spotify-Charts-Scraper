@@ -17,6 +17,16 @@ A Python client and browser dashboard for exploring Spotify Charts by country, c
 
 Keep client secrets in environment variables or an untracked `.env` file. Do not commit credentials. The dashboard stores the Spotify refresh token in the connected Neon database and refreshes short-lived access tokens automatically, so normal app restarts do not require reconnecting. The database must be available for the dashboard to restore and refresh authorization; reconnect only if Spotify authorization is revoked or the stored token becomes invalid.
 
+## Felix Support read API
+
+Felix Support can read cached live charts and saved history through the read-only endpoint `GET /api/integrations/felix-support/charts`. Set a dedicated `FELIX_SUPPORT_API_TOKEN` environment variable on this app and configure the same secret in Felix Support's server environment. Send it as `Authorization: Bearer <token>`; never expose it to browser code. Requests are rejected if the token is unset or invalid.
+
+- `view=live` returns saved latest chart payloads for all chart types and markets by default; it does not trigger a Spotify fetch. Add `type=daily_top_songs` and/or `country=GLOBAL` to filter.
+- `view=history` returns normalized saved chart snapshots. Optional `type`, `country`, `from=YYYY-MM-DD`, and `to=YYYY-MM-DD` filters narrow the results.
+- Both modes accept `limit` (1–500, default 100) and `offset` (default 0), and return `total`, `hasMore`, `limit`, and `offset` for pagination.
+
+Example: `GET /api/integrations/felix-support/charts?view=history&type=weekly_top_songs&country=GLOBAL&limit=100&offset=0`. Only data already present in the chart cache or history snapshots is returned; the endpoint does not initiate collection or expose database credentials.
+
 ## Python client
 
 The existing asynchronous client remains available for notebooks and scripts:
