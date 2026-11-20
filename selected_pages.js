@@ -566,7 +566,7 @@
       entitySelect.innerHTML = selections.length
         ? selections.map((entity) => `<option value="${escapeHtml(entity.entityUri)}" data-type="${escapeHtml(entity.entityType)}">${escapeHtml(entity.entityName)} · ${escapeHtml(entity.entityType)}</option>`).join("")
         : '<option value="">Save an entity first</option>';
-      byId("tracking-country").innerHTML = '<option value="ALL">All supported regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+      byId("tracking-country").innerHTML = '<option value="" selected disabled>Choose a market</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
       byId("collection-job-country").innerHTML = '<option value="">All markets</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
       byId("history-detail-country").innerHTML = '<option value="">All regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
       byId("history-detail-chart").innerHTML = '<option value="">Choose a chart</option>' + [
@@ -1103,6 +1103,11 @@
     submitButton.disabled = true;
     submitButton.textContent = "Starting tracker…";
     try {
+      const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
+      const chart = await requestJson(`/api/charts?${chartParams}`);
+      const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
+      if (!targetDate) throw new Error("Spotify did not return a chart date to start the backfill.");
+      if (startDate > targetDate) throw new Error(`Choose a start date on or before the latest chart date (${targetDate}).`);
       await requestJson("/api/tracking/configs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1114,11 +1119,7 @@
           backfill_start_date: startDate,
         }),
       });
-      const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
-      const chart = await requestJson(`/api/charts?${chartParams}`);
-      const targetDate = chart.displayChart?.date;
-      if (!targetDate) throw new Error("Tracking is saved, but Spotify did not return a chart date to start the backfill.");
-      const progress = await requestJson("/api/chart-history/backfill", {
+      const backfillRequest = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1129,13 +1130,23 @@
           entity_uris: [entity.value],
           target_entity_uris: [entity.value],
         }),
-      });
-      const processed = Number(progress.processedDates || 0);
-      const total = Number(progress.totalDates || 0);
-      const result = progress.complete
-        ? `Backfill complete: ${processed} of ${total} chart dates processed.`
-        : `Backfill started: ${processed} of ${total} chart dates processed so far.`;
-      setStatus("collection-status", `Tracker is on for ${entity.textContent}. ${result}`);
+      };
+      let progress;
+      do {
+        progress = await requestJson("/api/chart-history/backfill", backfillRequest);
+        const processed = Number(progress.processedDates || 0);
+        const total = Number(progress.totalDates || 0);
+        setStatus(
+          "collection-status",
+          `Tracker is on for ${entity.textContent}. Backfilled ${processed} of ${total} chart dates${progress.complete ? "." : "…"}`,
+        );
+        if (!progress.complete && !progress.error) {
+          await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        }
+      } while (!progress.complete && !progress.error);
+      if (progress.error) {
+        setStatus("collection-status", `Tracker is on for ${entity.textContent}. Backfill paused after a fetch error; saved progress is safe to resume.`, true);
+      }
       await loadHistoryManagement();
     } catch (error) {
       setStatus("collection-status", error.message, true);
