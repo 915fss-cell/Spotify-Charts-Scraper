@@ -12,7 +12,7 @@ from app import felix_support_charts
 class FelixSupportApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_missing_or_invalid_bearer_token(self):
         request = SimpleNamespace(headers={"authorization": "Bearer wrong"})
-        with patch.dict(os.environ, {"FELIX_SUPPORT_API_TOKEN": "correct"}, clear=False):
+        with patch.dict(os.environ, {"SPOTIFY_CHARTS_API_TOKEN": "correct"}, clear=False):
             with self.assertRaises(HTTPException) as raised:
                 await felix_support_charts(
                     request, "live", None, None, None, None, 100, 0
@@ -33,7 +33,7 @@ class FelixSupportApiTests(unittest.IsolatedAsyncioTestCase):
         )
         request = SimpleNamespace(headers={"authorization": "Bearer correct"})
         with (
-            patch.dict(os.environ, {"FELIX_SUPPORT_API_TOKEN": "correct"}, clear=False),
+            patch.dict(os.environ, {"SPOTIFY_CHARTS_API_TOKEN": "correct"}, clear=False),
             patch("app.get_history_pool", AsyncMock(return_value=pool)),
         ):
             result = await felix_support_charts(
@@ -69,7 +69,7 @@ class FelixSupportApiTests(unittest.IsolatedAsyncioTestCase):
         )
         request = SimpleNamespace(headers={"authorization": "Bearer correct"})
         with (
-            patch.dict(os.environ, {"FELIX_SUPPORT_API_TOKEN": "correct"}, clear=False),
+            patch.dict(os.environ, {"SPOTIFY_CHARTS_API_TOKEN": "correct"}, clear=False),
             patch("app.get_history_pool", AsyncMock(return_value=pool)),
         ):
             result = await felix_support_charts(

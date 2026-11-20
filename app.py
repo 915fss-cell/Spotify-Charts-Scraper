@@ -2221,7 +2221,7 @@ async def felix_support_charts(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0, le=10000000),
 ) -> dict[str, Any]:
-    secret = os.environ.get("FELIX_SUPPORT_API_TOKEN")
+    secret = os.environ.get("SPOTIFY_CHARTS_API_TOKEN")
     authorization = request.headers.get("authorization", "")
     supplied = authorization.removeprefix("Bearer ")
     if not secret:
