@@ -78,9 +78,8 @@ class LiveSelectionTests(unittest.TestCase):
             with patch.object(app, "Countries", FakeMarkets), \
                  patch.object(app, "read_selected_entities", new=AsyncMock(return_value=selections)), \
                  patch.object(app, "get_spotify_scraper", new=AsyncMock(return_value=Scraper())), \
-                 patch.object(app, "get_history_pool", new=AsyncMock(side_effect=AssertionError("Live must not access History storage"))) as history_pool:
+                 patch.object(app, "read_same_day_chart_payloads", new=AsyncMock(return_value={})):
                 result = await app.scan_focused_live("daily", "track", "all", "daily_top_songs")
-                history_pool.assert_not_awaited()
 
             self.assertEqual(result["marketsTotal"], 3)
             self.assertEqual(result["marketsScanned"], 2)
@@ -91,6 +90,31 @@ class LiveSelectionTests(unittest.TestCase):
             self.assertEqual(failure["httpStatus"], 503)
             self.assertEqual(failure["attemptCount"], 3)
             self.assertIn("regional upstream unavailable", failure["errorResponse"])
+
+        import asyncio
+        asyncio.run(run())
+
+    def test_live_scan_reuses_todays_saved_chart_without_spotify(self):
+        async def run():
+            cached = {
+                "displayChart": {"date": "2026-11-20"},
+                "entries": [track_entry()],
+            }
+            selections = [{"entity_uri": ARTIST_URI, "entity_type": "artist"}]
+            with patch.object(app, "Countries", FakeMarkets), \
+                 patch.object(app, "read_selected_entities", new=AsyncMock(return_value=selections)), \
+                 patch.object(app, "read_same_day_chart_payloads", new=AsyncMock(return_value={"GLOBAL": {
+                     "payload": cached, "fetchedAt": datetime.now(timezone.utc),
+                 }})) as read_cache, \
+                 patch.object(app, "get_spotify_scraper", new=AsyncMock(side_effect=AssertionError("Cached chart should not call Spotify"))):
+                result = await app.scan_focused_live("daily", "track", "global", "daily_top_songs")
+
+            read_cache.assert_awaited_once_with("daily_top_songs", ["GLOBAL"])
+            self.assertIsNotNone(result["savedChartFetchedAt"])
+            self.assertEqual(result["savedChartMarkets"], 1)
+            self.assertEqual(result["marketsScanned"], 1)
+            self.assertEqual(result["releases"][0]["entityUri"], TRACK_URI)
+            self.assertTrue(result["marketDiagnostics"][0]["cacheHit"])
 
         import asyncio
         asyncio.run(run())
@@ -129,6 +153,58 @@ class LiveSelectionTests(unittest.TestCase):
             self.assertEqual(last_error, "one_or_more_markets_failed")
             self.assertEqual(app.focused_chart_cache[key][1], response)
             app.focused_chart_cache.pop(key, None)
+
+        import asyncio
+        asyncio.run(run())
+
+    def test_focused_live_prefers_newer_collection_chart_cache(self):
+        async def run():
+            selections = [{"entity_uri": TRACK_URI, "entity_type": "track"}]
+            now = datetime.now(timezone.utc)
+            cache_row = {
+                "payload": {"entries": [track_entry()]},
+                "fetchedAt": now,
+            }
+            stale_snapshot = {
+                "snapshotReused": True,
+                "savedChartFetchedAt": (now - __import__("datetime").timedelta(minutes=10)).isoformat(),
+                "regions": [],
+                "marketDiagnostics": [],
+            }
+            response = {
+                "artist": {"entityName": "Saved selections"},
+                "cadence": "daily",
+                "entityType": "track",
+                "chartType": "daily_top_songs",
+                "marketScope": "global",
+                "marketsTotal": 1,
+                "marketsScanned": 1,
+                "matchingRegions": 1,
+                "failedRegions": [],
+                "marketDiagnostics": [],
+                "savedChartMarkets": 1,
+                "savedChartFetchedAt": now.isoformat(),
+                "regions": [],
+                "releases": [],
+                "scanInProgress": False,
+            }
+            cache_key = ("daily", "track", "global", "daily_top_songs", __import__("hashlib").sha256(TRACK_URI.encode()).hexdigest())
+            app.focused_chart_cache.pop(cache_key, None)
+            with patch.object(app, "require_spotify_connection"), \
+                 patch.object(app, "read_selected_entities", new=AsyncMock(return_value=selections)), \
+                 patch.object(app, "read_same_day_chart_payloads", new=AsyncMock(return_value={"GLOBAL": cache_row})), \
+                 patch.object(app, "read_focused_result_snapshot", new=AsyncMock(return_value=stale_snapshot)), \
+                 patch.object(app, "read_legacy_focused_scan", new=AsyncMock(side_effect=AssertionError("Outdated legacy scan should not win"))), \
+                 patch.object(app, "scan_focused_live", new=AsyncMock(return_value=response)) as scan, \
+                 patch.object(app, "get_history_pool", new=AsyncMock(return_value=object())), \
+                 patch.object(app, "save_focused_result_snapshot", new=AsyncMock()), \
+                 patch.object(app, "save_focused_results_to_history", new=AsyncMock(return_value=1)):
+                result = await app.focused_live(
+                    cadence="daily", entity_type="track", scope="global", chart_type="daily_top_songs"
+                )
+            self.assertEqual(result["savedChartMarkets"], 1)
+            self.assertEqual(scan.await_args.kwargs["cached_payloads"], {"GLOBAL": cache_row})
+            app.focused_chart_cache.pop(cache_key, None)
 
         import asyncio
         asyncio.run(run())

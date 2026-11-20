@@ -195,11 +195,16 @@
       diagnostics.innerHTML = `<summary class="focus-card-title"><strong>Market diagnostics</strong><span>${succeededMarketDetails} succeeded · ${failedMarketDetails} failed</span></summary><div class="focus-data-list">${marketDiagnostics.map((item) => `<div class="focus-data-row"><div class="focus-row-copy"><strong class="focus-row-title">${escapeHtml(item.status)} · ${escapeHtml(item.countryName)} (${escapeHtml(item.countryCode)})</strong><span class="focus-row-subtitle">${escapeHtml(item.chartType)} · ${item.httpStatus ? `HTTP ${item.httpStatus}` : "No HTTP response"} · ${Number(item.attemptCount || 0)} attempt${Number(item.attemptCount || 0) === 1 ? "" : "s"}${item.timeout ? " · timeout" : ""}${item.rateLimited ? " · rate limited" : ""}${item.retryDelaySeconds != null ? ` · retry delay ${Number(item.retryDelaySeconds).toFixed(1)}s` : item.retryAfterSeconds != null ? ` · retry after ${Number(item.retryAfterSeconds).toFixed(1)}s` : ""}</span>${item.error || item.errorResponse ? `<span class="focus-row-subtitle">${escapeHtml(item.error || "Request failed")}${item.errorResponse ? ` · ${escapeHtml(item.errorResponse)}` : ""}</span>` : ""}</div></div>`).join("")}</div>`;
       byId("live-results").append(diagnostics);
     }
-    const marketMessage = payload.marketScope === "global"
-      ? "Global chart loaded. Scan all regions to find more placements."
-      : payload.snapshotReused
-        ? `Today’s saved results loaded from History (${payload.marketsScanned} of ${payload.marketsTotal} markets).`
-        : `${payload.marketsScanned} of ${payload.marketsTotal} markets scanned.`;
+    const savedChartMarkets = Number(payload.savedChartMarkets || 0);
+    const marketMessage = payload.snapshotReused
+      ? `Today’s saved results loaded from History (${payload.marketsScanned} of ${payload.marketsTotal} markets).`
+      : savedChartMarkets === payload.marketsTotal && savedChartMarkets > 0
+        ? `Today’s saved chart data reused for all ${savedChartMarkets} markets.`
+        : savedChartMarkets > 0
+          ? `Today’s saved chart data reused for ${savedChartMarkets} of ${payload.marketsTotal} markets; the rest were loaded from Spotify.`
+          : payload.marketScope === "global"
+            ? "Global chart loaded. Scan all regions to find more placements."
+            : `${payload.marketsScanned} of ${payload.marketsTotal} markets scanned.`;
     const regionLabel = payload.matchingRegions === 1 ? "region" : "regions";
     const message = `${payload.artist.entityName}: ${payload.matchingRegions} ${regionLabel} charting ${entityTypeName()} in ${chartTypeName()}. ${marketMessage}${payload.metadataLimitation ? ` ${payload.metadataLimitation}` : ""}`;
     const storageMessage = payload.historyStorageAvailable == null
@@ -1090,6 +1095,11 @@
   byId("tracked-entity-trend").addEventListener("toggle", (event) => {
     if (event.currentTarget.open) requestAnimationFrame(() => trackedEntityChart?.resize());
   });
+  const setTrackingRunStatus = (message, state) => {
+    const status = byId("tracking-run-status");
+    status.textContent = message;
+    status.dataset.state = state;
+  };
   byId("tracking-config-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1107,10 +1117,12 @@
     submitButton.disabled = true;
     submitButton.textContent = "Starting tracker…";
     let completedMarkets = 0;
+    setTrackingRunStatus(`Running · Preparing ${markets.length.toLocaleString()} ${markets.length === 1 ? "market" : "markets"} for ${entity.textContent}.`, "running");
     try {
       for (const [index, marketOption] of markets.entries()) {
         const country = marketOption.value;
         const marketName = marketOption.textContent;
+        setTrackingRunStatus(`Running · Fetching the latest chart for ${marketName} (${index + 1} of ${markets.length}).`, "running");
         const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
         const chart = await requestJson(`/api/charts?${chartParams}`);
         const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
@@ -1144,9 +1156,9 @@
           progress = await requestJson("/api/chart-history/backfill", backfillRequest);
           const processed = Number(progress.processedDates || 0);
           const total = Number(progress.totalDates || 0);
-          setStatus(
-            "collection-status",
-            `Tracking ${entity.textContent} in ${marketName} (${index + 1} of ${markets.length}). Backfilled ${processed} of ${total} chart dates${progress.complete ? "." : "…"}`,
+          setTrackingRunStatus(
+            `Running · ${marketName} (${index + 1} of ${markets.length} markets) · Backfilled ${processed} of ${total} chart dates${progress.complete ? "." : "…"}`,
+            "running",
           );
           if (progress.error) {
             throw new Error(`Backfill paused in ${marketName} after a fetch error. Saved progress is safe to resume.`);
@@ -1154,10 +1166,13 @@
           if (!progress.complete) await new Promise((resolve) => window.setTimeout(resolve, 2000));
         } while (!progress.complete);
         completedMarkets += 1;
+        setTrackingRunStatus(`Running · ${completedMarkets} of ${markets.length} markets complete.`, "running");
       }
+      setTrackingRunStatus(`Done · Tracker active in ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market" : "markets"}. Historical backfill is complete.`, "done");
       setStatus("collection-status", `Tracker is on for ${entity.textContent} in ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market" : "markets"}. Historical backfill is complete.`);
       await loadHistoryManagement();
     } catch (error) {
+      setTrackingRunStatus(`Stopped · ${error.message}`, "error");
       setStatus("collection-status", error.message, true);
       await loadHistoryManagement();
     } finally {

@@ -310,7 +310,10 @@ async def run_collection_tick(
     if all_markets_for_daily_songs:
         config_rows = await pool.fetch(
             """SELECT 'daily_top_songs'::text AS chart_type, markets.country_code,
-                      NULL::text[] AS entity_uris
+                      (SELECT array_agg(selection.entity_uri ORDER BY selection.entity_uri)
+                       FROM public.spotify_chart_selections selection
+                       WHERE selection.is_archived = false
+                         AND selection.entity_type IN ('track', 'artist')) AS entity_uris
                FROM unnest($5::text[]) AS markets(country_code)
                WHERE 'daily_top_songs' = ANY($1::text[])
                  AND NOT EXISTS (
