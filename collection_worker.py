@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from datetime import datetime, time as clock_time, timedelta, timezone
+from datetime import date, datetime, time as clock_time, timedelta, timezone
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
@@ -215,6 +215,41 @@ async def _process_pending_history_jobs(
     return completed, failed, errors
 
 
+async def _persist_chart_response(
+    pool: asyncpg.Pool,
+    connection: asyncpg.Connection,
+    chart_type: str,
+    country: str,
+    requested_date: str,
+    response_date: date,
+    payload: dict[str, Any],
+    entries: list[dict[str, Any]],
+    entity_uris: set[str],
+) -> None:
+    await connection.execute(
+        """INSERT INTO public.spotify_chart_payload_cache
+             (chart_type, country_code, requested_date, payload, chart_date, fetched_at)
+           VALUES ($1, $2, $3, $4::jsonb, $5, now())
+           ON CONFLICT (chart_type, country_code, requested_date) DO UPDATE SET
+             payload = EXCLUDED.payload, chart_date = EXCLUDED.chart_date, fetched_at = now()""",
+        chart_type,
+        country,
+        requested_date,
+        json.dumps(payload, separators=(",", ":")),
+        response_date,
+    )
+    await save_chart_snapshot(
+        pool,
+        chart_type,
+        country,
+        response_date,
+        entries,
+        allowed_entity_uris=entity_uris,
+        connection=connection,
+        allowed_artist_uris={uri for uri in entity_uris if uri.startswith("spotify:artist:")},
+    )
+
+
 async def run_collection_tick(
     pool: asyncpg.Pool,
     scraper_factory: Callable[[], Awaitable[SpotifyCharts]],
@@ -303,6 +338,7 @@ async def run_collection_tick(
                 raise ValueError("Spotify returned a chart without a valid date and entries.")
 
             requested_date = response_date.isoformat()
+            entity_uris = set(config["entity_uris"])
             async with pool.acquire() as connection:
                 async with connection.transaction():
                     await connection.execute(
@@ -330,38 +366,27 @@ async def run_collection_tick(
                             chart_type, country, requested_date,
                         )
                         if existing_status in {"succeeded", "unavailable", "complete"}:
+                            await _persist_chart_response(
+                                pool, connection, chart_type, country, requested_date,
+                                response_date, payload, entries, entity_uris,
+                            )
                             await connection.execute(
                                 """UPDATE public.spotify_chart_refresh_jobs
-                                   SET fetched_at = now(), updated_at = now()
+                                   SET status = 'succeeded', response_chart_date = $4,
+                                       completed_at = now(), fetched_at = now(), last_http_status = 200,
+                                       last_error = NULL, lease_owner = NULL, lease_expires_at = NULL,
+                                       updated_at = now()
                                    WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3
                                      AND status IN ('succeeded', 'unavailable', 'complete')""",
-                                chart_type, country, requested_date,
+                                chart_type, country, requested_date, response_date,
                             )
                             completed += 1
                             continue
                         raise RuntimeError("Chart date is already leased or waiting for retry.")
 
-                    await connection.execute(
-                        """INSERT INTO public.spotify_chart_payload_cache
-                             (chart_type, country_code, requested_date, payload, chart_date, fetched_at)
-                           VALUES ($1, $2, $3, $4::jsonb, $5, now())
-                           ON CONFLICT (chart_type, country_code, requested_date) DO NOTHING""",
-                        chart_type,
-                        country,
-                        requested_date,
-                        json.dumps(payload, separators=(",", ":")),
-                        response_date,
-                    )
-                    entity_uris = set(config["entity_uris"])
-                    await save_chart_snapshot(
-                        pool,
-                        chart_type,
-                        country,
-                        response_date,
-                        entries,
-                        allowed_entity_uris=entity_uris,
-                        connection=connection,
-                        allowed_artist_uris={uri for uri in entity_uris if uri.startswith("spotify:artist:")},
+                    await _persist_chart_response(
+                        pool, connection, chart_type, country, requested_date,
+                        response_date, payload, entries, entity_uris,
                     )
                     await connection.execute(
                         """UPDATE public.spotify_chart_refresh_jobs SET status = 'succeeded',

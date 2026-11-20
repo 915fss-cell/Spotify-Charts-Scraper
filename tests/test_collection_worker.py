@@ -438,6 +438,48 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ON CONFLICT (chart_type, country_code, chart_date, track_uri) DO NOTHING", connection.query)
         self.assertNotIn("DO UPDATE", connection.query)
 
+    async def test_repeated_latest_refresh_persists_same_date_payload_and_snapshots(self):
+        track_uri = "spotify:track:0123456789abcdef"
+        payload = {
+            "displayChart": {"date": "2026-11-18"},
+            "entries": [{
+                "trackMetadata": {"trackUri": track_uri, "trackName": "Example song"},
+                "chartEntryData": {"currentRank": 4},
+            }],
+        }
+
+        class Scraper:
+            async def daily_top_songs(self, country, requested_date):
+                return payload
+
+        pool = RunLifecyclePool(fetch_responses=[[{
+            "chart_type": "daily_top_songs",
+            "country_code": "US",
+            "entity_uris": [track_uri],
+        }]])
+        pool.connection.job_claim = None
+        pool.connection.existing_status = "succeeded"
+
+        async def scraper_factory():
+            return Scraper()
+
+        result = await run_collection_tick(
+            pool,
+            scraper_factory,
+            include_history=False,
+            chart_types=["daily_top_songs"],
+        )
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["completedChartKeys"], 1)
+        persisted_cache = [query for query, _ in pool.connection.executed if "spotify_chart_payload_cache" in query]
+        self.assertEqual(len(persisted_cache), 1)
+        self.assertIn("DO UPDATE SET", persisted_cache[0])
+        self.assertEqual(len(pool.connection.executemany_calls), 1)
+        self.assertEqual(pool.connection.executemany_calls[0][1][0][3], track_uri)
+        updated_job = [query for query, _ in pool.connection.executed if "SET status = 'succeeded'" in query]
+        self.assertEqual(len(updated_job), 1)
+
     async def test_scheduled_run_claims_due_schedule_and_creates_a_run(self):
         now = datetime.now(timezone.utc)
         pool = RunLifecyclePool(schedule={
@@ -565,7 +607,7 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pool.fetch_arguments[0][3], workflow_started_at)
         self.assertIn("j.fetched_at >= $4::timestamptz", pool.fetch_queries[0])
 
-    async def test_latest_refresh_marks_existing_chart_date_as_fetched_today(self):
+    async def test_latest_refresh_resaves_existing_chart_date(self):
         config = {
             "chart_type": "weekly_top_albums",
             "country_code": "US",
@@ -594,12 +636,17 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["requestedChartKeys"], 1)
         self.assertEqual(result["completedChartKeys"], 1)
         self.assertEqual(scraper.requested, [("US", "latest")])
-        freshness_update = next(
-            (query, args) for query, args in pool.connection.executed
-            if "SET fetched_at = now(), updated_at = now()" in query
+        cache_refresh = next(
+            query for query, _ in pool.connection.executed
+            if "spotify_chart_payload_cache" in query
         )
-        self.assertIn("status IN ('succeeded', 'unavailable', 'complete')", freshness_update[0])
-        self.assertEqual(freshness_update[1], ("weekly_top_albums", "US", "2026-11-15"))
+        self.assertIn("DO UPDATE SET", cache_refresh)
+        job_refresh = next(
+            (query, args) for query, args in pool.connection.executed
+            if "SET status = 'succeeded'" in query
+        )
+        self.assertIn("status IN ('succeeded', 'unavailable', 'complete')", job_refresh[0])
+        self.assertEqual(job_refresh[1], ("weekly_top_albums", "US", "2026-11-15", date(2026, 11, 15)))
 
     async def test_latest_404_is_marked_unavailable_for_the_day(self):
         config = {
