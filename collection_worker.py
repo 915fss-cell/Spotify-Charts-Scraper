@@ -225,19 +225,25 @@ async def _persist_chart_response(
     payload: dict[str, Any],
     entries: list[dict[str, Any]],
     entity_uris: set[str],
+    cache_as_latest: bool = False,
 ) -> None:
-    await connection.execute(
-        """INSERT INTO public.spotify_chart_payload_cache
-             (chart_type, country_code, requested_date, payload, chart_date, fetched_at)
-           VALUES ($1, $2, $3, $4::jsonb, $5, now())
-           ON CONFLICT (chart_type, country_code, requested_date) DO UPDATE SET
-             payload = EXCLUDED.payload, chart_date = EXCLUDED.chart_date, fetched_at = now()""",
-        chart_type,
-        country,
-        requested_date,
-        json.dumps(payload, separators=(",", ":")),
-        response_date,
-    )
+    cache_keys = [requested_date]
+    if cache_as_latest and requested_date != "latest":
+        cache_keys.append("latest")
+    serialized_payload = json.dumps(payload, separators=(",", ":"))
+    for cache_key in cache_keys:
+        await connection.execute(
+            """INSERT INTO public.spotify_chart_payload_cache
+                 (chart_type, country_code, requested_date, payload, chart_date, fetched_at)
+               VALUES ($1, $2, $3, $4::jsonb, $5, now())
+               ON CONFLICT (chart_type, country_code, requested_date) DO UPDATE SET
+                 payload = EXCLUDED.payload, chart_date = EXCLUDED.chart_date, fetched_at = now()""",
+            chart_type,
+            country,
+            cache_key,
+            serialized_payload,
+            response_date,
+        )
     await save_chart_snapshot(
         pool,
         chart_type,
@@ -369,6 +375,7 @@ async def run_collection_tick(
                             await _persist_chart_response(
                                 pool, connection, chart_type, country, requested_date,
                                 response_date, payload, entries, entity_uris,
+                                cache_as_latest=True,
                             )
                             await connection.execute(
                                 """UPDATE public.spotify_chart_refresh_jobs
@@ -387,6 +394,7 @@ async def run_collection_tick(
                     await _persist_chart_response(
                         pool, connection, chart_type, country, requested_date,
                         response_date, payload, entries, entity_uris,
+                        cache_as_latest=True,
                     )
                     await connection.execute(
                         """UPDATE public.spotify_chart_refresh_jobs SET status = 'succeeded',

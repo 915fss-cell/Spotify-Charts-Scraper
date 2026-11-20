@@ -472,9 +472,13 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(result["completedChartKeys"], 1)
-        persisted_cache = [query for query, _ in pool.connection.executed if "spotify_chart_payload_cache" in query]
-        self.assertEqual(len(persisted_cache), 1)
-        self.assertIn("DO UPDATE SET", persisted_cache[0])
+        persisted_cache = [
+            (query, args) for query, args in pool.connection.executed
+            if "spotify_chart_payload_cache" in query
+        ]
+        self.assertEqual(len(persisted_cache), 2)
+        self.assertTrue(all("DO UPDATE SET" in query for query, _ in persisted_cache))
+        self.assertEqual({args[2] for _, args in persisted_cache}, {"2026-11-18", "latest"})
         self.assertEqual(len(pool.connection.executemany_calls), 1)
         self.assertEqual(pool.connection.executemany_calls[0][1][0][3], track_uri)
         updated_job = [query for query, _ in pool.connection.executed if "SET status = 'succeeded'" in query]
