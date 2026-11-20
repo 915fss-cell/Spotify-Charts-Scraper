@@ -566,7 +566,7 @@
       entitySelect.innerHTML = selections.length
         ? selections.map((entity) => `<option value="${escapeHtml(entity.entityUri)}" data-type="${escapeHtml(entity.entityType)}">${escapeHtml(entity.entityName)} · ${escapeHtml(entity.entityType)}</option>`).join("")
         : '<option value="">Save an entity first</option>';
-      byId("tracking-country").innerHTML = '<option value="" selected disabled>Choose a market</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+      byId("tracking-country").innerHTML = '<option value="" selected disabled>Choose a market</option><option value="ALL">All supported regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
       byId("collection-job-country").innerHTML = '<option value="">All markets</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
       byId("history-detail-country").innerHTML = '<option value="">All regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
       byId("history-detail-chart").innerHTML = '<option value="">Choose a chart</option>' + [
@@ -1096,57 +1096,66 @@
     if (!form.reportValidity()) return;
     const entity = byId("tracking-entity").selectedOptions[0];
     const chartType = byId("tracking-chart").value;
-    const country = byId("tracking-country").value;
+    const countrySelect = byId("tracking-country");
+    const selectedCountry = countrySelect.value;
+    const markets = selectedCountry === "ALL"
+      ? Array.from(countrySelect.options).filter((option) => option.value && option.value !== "ALL")
+      : [countrySelect.selectedOptions[0]];
     const startDate = byId("tracking-start-date").value;
     const submitButton = form.querySelector('button[type="submit"]');
-    if (!entity?.value || !startDate || submitButton.disabled) return;
+    if (!entity?.value || !startDate || !markets.length || submitButton.disabled) return;
     submitButton.disabled = true;
     submitButton.textContent = "Starting tracker…";
+    let completedMarkets = 0;
     try {
-      const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
-      const chart = await requestJson(`/api/charts?${chartParams}`);
-      const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
-      if (!targetDate) throw new Error("Spotify did not return a chart date to start the backfill.");
-      if (startDate > targetDate) throw new Error(`Choose a start date on or before the latest chart date (${targetDate}).`);
-      await requestJson("/api/tracking/configs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          entity_uri: entity.value,
-          chart_type: chartType,
-          country_code: country,
-          enabled: true,
-          backfill_start_date: startDate,
-        }),
-      });
-      const backfillRequest = {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chart_type: chartType,
-          country,
-          start_date: startDate,
-          target_date: String(targetDate).slice(0, 10),
-          entity_uris: [entity.value],
-          target_entity_uris: [entity.value],
-        }),
-      };
-      let progress;
-      do {
-        progress = await requestJson("/api/chart-history/backfill", backfillRequest);
-        const processed = Number(progress.processedDates || 0);
-        const total = Number(progress.totalDates || 0);
-        setStatus(
-          "collection-status",
-          `Tracker is on for ${entity.textContent}. Backfilled ${processed} of ${total} chart dates${progress.complete ? "." : "…"}`,
-        );
-        if (!progress.complete && !progress.error) {
-          await new Promise((resolve) => window.setTimeout(resolve, 2000));
-        }
-      } while (!progress.complete && !progress.error);
-      if (progress.error) {
-        setStatus("collection-status", `Tracker is on for ${entity.textContent}. Backfill paused after a fetch error; saved progress is safe to resume.`, true);
+      for (const [index, marketOption] of markets.entries()) {
+        const country = marketOption.value;
+        const marketName = marketOption.textContent;
+        const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
+        const chart = await requestJson(`/api/charts?${chartParams}`);
+        const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
+        if (!targetDate) throw new Error(`Spotify did not return a chart date for ${marketName}. Completed ${completedMarkets} of ${markets.length} markets.`);
+        if (startDate > targetDate) throw new Error(`The start date is after the latest chart date in ${marketName} (${targetDate}). Completed ${completedMarkets} of ${markets.length} markets.`);
+        await requestJson("/api/tracking/configs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entity_uri: entity.value,
+            chart_type: chartType,
+            country_code: country,
+            enabled: true,
+            backfill_start_date: startDate,
+          }),
+        });
+        const backfillRequest = {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chart_type: chartType,
+            country,
+            start_date: startDate,
+            target_date: targetDate,
+            entity_uris: [entity.value],
+            target_entity_uris: [entity.value],
+          }),
+        };
+        let progress;
+        do {
+          progress = await requestJson("/api/chart-history/backfill", backfillRequest);
+          const processed = Number(progress.processedDates || 0);
+          const total = Number(progress.totalDates || 0);
+          setStatus(
+            "collection-status",
+            `Tracking ${entity.textContent} in ${marketName} (${index + 1} of ${markets.length}). Backfilled ${processed} of ${total} chart dates${progress.complete ? "." : "…"}`,
+          );
+          if (progress.error) {
+            throw new Error(`Backfill paused in ${marketName} after a fetch error. Saved progress is safe to resume.`);
+          }
+          if (!progress.complete) await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        } while (!progress.complete);
+        completedMarkets += 1;
       }
+      setStatus("collection-status", `Tracker is on for ${entity.textContent} in ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market" : "markets"}. Historical backfill is complete.`);
       await loadHistoryManagement();
     } catch (error) {
       setStatus("collection-status", error.message, true);
