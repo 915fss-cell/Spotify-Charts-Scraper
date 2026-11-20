@@ -195,11 +195,16 @@
       diagnostics.innerHTML = `<summary class="focus-card-title"><strong>Market diagnostics</strong><span>${succeededMarketDetails} succeeded · ${failedMarketDetails} failed</span></summary><div class="focus-data-list">${marketDiagnostics.map((item) => `<div class="focus-data-row"><div class="focus-row-copy"><strong class="focus-row-title">${escapeHtml(item.status)} · ${escapeHtml(item.countryName)} (${escapeHtml(item.countryCode)})</strong><span class="focus-row-subtitle">${escapeHtml(item.chartType)} · ${item.httpStatus ? `HTTP ${item.httpStatus}` : "No HTTP response"} · ${Number(item.attemptCount || 0)} attempt${Number(item.attemptCount || 0) === 1 ? "" : "s"}${item.timeout ? " · timeout" : ""}${item.rateLimited ? " · rate limited" : ""}${item.retryDelaySeconds != null ? ` · retry delay ${Number(item.retryDelaySeconds).toFixed(1)}s` : item.retryAfterSeconds != null ? ` · retry after ${Number(item.retryAfterSeconds).toFixed(1)}s` : ""}</span>${item.error || item.errorResponse ? `<span class="focus-row-subtitle">${escapeHtml(item.error || "Request failed")}${item.errorResponse ? ` · ${escapeHtml(item.errorResponse)}` : ""}</span>` : ""}</div></div>`).join("")}</div>`;
       byId("live-results").append(diagnostics);
     }
-    const marketMessage = payload.marketScope === "global"
-      ? "Global chart loaded. Scan all regions to find more placements."
-      : payload.snapshotReused
-        ? `Today’s saved results loaded from History (${payload.marketsScanned} of ${payload.marketsTotal} markets).`
-        : `${payload.marketsScanned} of ${payload.marketsTotal} markets scanned.`;
+    const savedChartMarkets = Number(payload.savedChartMarkets || 0);
+    const marketMessage = payload.snapshotReused
+      ? `Today’s saved results loaded from History (${payload.marketsScanned} of ${payload.marketsTotal} markets).`
+      : savedChartMarkets === payload.marketsTotal && savedChartMarkets > 0
+        ? `Today’s saved chart data reused for all ${savedChartMarkets} markets.`
+        : savedChartMarkets > 0
+          ? `Today’s saved chart data reused for ${savedChartMarkets} of ${payload.marketsTotal} markets; the rest were loaded from Spotify.`
+          : payload.marketScope === "global"
+            ? "Global chart loaded. Scan all regions to find more placements."
+            : `${payload.marketsScanned} of ${payload.marketsTotal} markets scanned.`;
     const regionLabel = payload.matchingRegions === 1 ? "region" : "regions";
     const message = `${payload.artist.entityName}: ${payload.matchingRegions} ${regionLabel} charting ${entityTypeName()} in ${chartTypeName()}. ${marketMessage}${payload.metadataLimitation ? ` ${payload.metadataLimitation}` : ""}`;
     const storageMessage = payload.historyStorageAvailable == null

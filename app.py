@@ -99,6 +99,40 @@ def decode_json_value(value: Any) -> Any:
     return json.loads(value) if isinstance(value, str) else value
 
 
+async def read_same_day_chart_payloads(
+    chart_type: str, country_codes: list[str]
+) -> dict[str, dict[str, Any]]:
+    if not country_codes:
+        return {}
+    pool = await get_history_pool()
+    rows = await pool.fetch(
+        """SELECT country_code, payload, fetched_at FROM public.spotify_chart_payload_cache
+           WHERE chart_type = $1 AND requested_date = 'latest'
+             AND country_code = ANY($2::text[]) AND fetched_at::date = CURRENT_DATE""",
+        chart_type, country_codes,
+    )
+    payloads: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        payload = decode_json_value(row["payload"])
+        if isinstance(payload, dict) and isinstance(payload.get("entries"), list):
+            payloads[row["country_code"]] = {"payload": payload, "fetchedAt": row["fetched_at"]}
+    return payloads
+
+
+def saved_chart_cache_is_newer(response: dict[str, Any], cached_payloads: dict[str, dict[str, Any]]) -> bool:
+    if not cached_payloads:
+        return False
+    response_fetched_at = response.get("savedChartFetchedAt")
+    if not response_fetched_at:
+        return True
+    try:
+        response_time = datetime.fromisoformat(str(response_fetched_at).replace("Z", "+00:00"))
+        cache_time = max(item["fetchedAt"] for item in cached_payloads.values())
+    except (TypeError, ValueError, KeyError):
+        return True
+    return cache_time > response_time
+
+
 async def read_focused_result_snapshot(
     cadence: str, entity_type: str, scope: str, chart_type: str, selection_fingerprint: str
 ) -> dict[str, Any] | None:
@@ -1521,11 +1555,18 @@ async def focused_live(
             focused_chart_cache[cache_key] = (time.monotonic(), combined)
         return combined
 
+    saved_chart_payloads: dict[str, dict[str, Any]] = {}
+    if scope == "global":
+        try:
+            saved_chart_payloads = await read_same_day_chart_payloads(selected_chart_type, [Countries.GLOBAL.value])
+        except Exception as error:
+            print(f"[v0] Today's saved chart lookup failed: {type(error).__name__}")
     async with focused_chart_cache_lock:
         cached = focused_chart_cache.get(cache_key)
-        if not refresh and cached and time.monotonic() - cached[0] < FOCUSED_CHART_CACHE_TTL:
+        cached_needs_refresh = cached and saved_chart_cache_is_newer(cached[1], saved_chart_payloads)
+        if not refresh and cached and not cached_needs_refresh and time.monotonic() - cached[0] < FOCUSED_CHART_CACHE_TTL:
             return cached[1]
-        if refresh:
+        if refresh or cached_needs_refresh:
             focused_chart_cache.pop(cache_key, None)
 
     try:
@@ -1535,13 +1576,15 @@ async def focused_live(
     except Exception as error:
         print(f"[v0] Focused Live snapshot lookup failed: {type(error).__name__}")
         snapshot = None
-    if snapshot is not None:
+    if snapshot is not None and not saved_chart_cache_is_newer(snapshot, saved_chart_payloads):
         async with focused_chart_cache_lock:
             focused_chart_cache[cache_key] = (time.monotonic(), snapshot)
         return snapshot
 
     try:
-        previous_scan = await read_legacy_focused_scan(cadence, entity_type, selected_chart_type)
+        previous_scan = None if saved_chart_cache_is_newer(snapshot or {}, saved_chart_payloads) else await read_legacy_focused_scan(
+            cadence, entity_type, selected_chart_type
+        )
     except Exception as error:
         print(f"[v0] Previous focused scan lookup failed: {type(error).__name__}")
         previous_scan = None
@@ -1582,7 +1625,10 @@ async def focused_live(
                 focused_chart_scan_tasks[cache_key] = task
             return pending_focused_scan(cadence, entity_type, selected_chart_type)
 
-    response = await scan_focused_live(cadence, entity_type, scope, selected_chart_type)
+    response = await scan_focused_live(
+        cadence, entity_type, scope, selected_chart_type,
+        cached_payloads=saved_chart_payloads or None,
+    )
     try:
         pool = await get_history_pool()
         await save_focused_result_snapshot(
@@ -1607,6 +1653,7 @@ async def scan_focused_live(
     scope: str,
     chart_type: str | None = None,
     country_codes: set[str] | None = None,
+    cached_payloads: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     chart_type = chart_type or f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
     selections = await read_selected_entities()
@@ -1614,38 +1661,57 @@ async def scan_focused_live(
     selected_track_uris = {row["entity_uri"] for row in selections if row["entity_type"] == "track"}
     if chart_type == "weekly_top_albums":
         selected_track_uris = set()
-    scraper = await get_spotify_scraper()
-    method = getattr(scraper, CHART_METHODS[chart_type])
     markets = [Countries.GLOBAL] if scope == "global" else list(Countries)
     if country_codes is not None:
         markets = [country for country in markets if country.value in country_codes]
+    if cached_payloads is None:
+        try:
+            cached_payloads = await read_same_day_chart_payloads(chart_type, [country.value for country in markets])
+        except Exception as error:
+            print(f"[v0] Today's saved chart lookup failed: {type(error).__name__}")
+            cached_payloads = {}
+    uncached_markets = [country for country in markets if country.value not in cached_payloads]
+    scraper = await get_spotify_scraper() if uncached_markets else None
+    method = getattr(scraper, CHART_METHODS[chart_type]) if scraper else None
     semaphore = asyncio.Semaphore(2)
 
     async def fetch_market(country) -> tuple[Any, dict[str, Any] | None, dict[str, Any]]:
-        async with semaphore:
-            try:
-                payload = await method(country.value, "latest")
+        cached_chart = cached_payloads.get(country.value)
+        try:
+            if cached_chart is not None:
+                payload = cached_chart["payload"]
+                diagnostic = {
+                    "attemptCount": 0, "httpStatus": 200, "timeout": False, "rateLimited": False,
+                    "cacheHit": True,
+                }
+            else:
+                async with semaphore:
+                    payload = await method(country.value, "latest")
                 if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
                     raise ValueError("Spotify returned an unsupported chart payload.")
                 diagnostic = scraper.get_chart_diagnostics(chart_type, country.value, "latest")
-                diagnostic.update({"countryCode": country.value, "countryName": COUNTRY_NAMES.get(country.value, country.value),
-                                   "chartType": chart_type, "status": "succeeded"})
-                return country, payload, diagnostic
-            except Exception as error:
-                diagnostic = scraper.get_chart_diagnostics(chart_type, country.value, "latest")
-                response = getattr(error, "response", None)
-                diagnostic.update({
-                    "countryCode": country.value,
-                    "countryName": COUNTRY_NAMES.get(country.value, country.value),
-                    "chartType": chart_type,
-                    "status": "failed",
-                    "httpStatus": response.status_code if response is not None else diagnostic.get("httpStatus"),
-                    "error": type(error).__name__,
-                    "errorResponse": response.text[:500] if response is not None else diagnostic.get("errorResponse"),
-                    "timeout": isinstance(error, httpx.TimeoutException) or bool(diagnostic.get("timeout")),
-                    "rateLimited": bool(diagnostic.get("rateLimited")) or (response is not None and response.status_code == 429),
-                })
-                return country, None, diagnostic
+                diagnostic["cacheHit"] = False
+            diagnostic.update({"countryCode": country.value, "countryName": COUNTRY_NAMES.get(country.value, country.value),
+                               "chartType": chart_type, "status": "succeeded"})
+            return country, payload, diagnostic
+        except Exception as error:
+            diagnostic = scraper.get_chart_diagnostics(chart_type, country.value, "latest") if scraper else {
+                "attemptCount": 0, "httpStatus": None, "timeout": False, "rateLimited": False,
+            }
+            response = getattr(error, "response", None)
+            diagnostic.update({
+                "countryCode": country.value,
+                "countryName": COUNTRY_NAMES.get(country.value, country.value),
+                "chartType": chart_type,
+                "status": "failed",
+                "httpStatus": response.status_code if response is not None else diagnostic.get("httpStatus"),
+                "error": type(error).__name__,
+                "errorResponse": response.text[:500] if response is not None else diagnostic.get("errorResponse"),
+                "timeout": isinstance(error, httpx.TimeoutException) or bool(diagnostic.get("timeout")),
+                "rateLimited": bool(diagnostic.get("rateLimited")) or (response is not None and response.status_code == 429),
+                "cacheHit": False,
+            })
+            return country, None, diagnostic
 
     results = await asyncio.gather(*(fetch_market(country) for country in markets))
     releases: dict[str, dict[str, Any]] = {}
@@ -1689,6 +1755,9 @@ async def scan_focused_live(
         for _, payload, _ in results if payload
         for entry in payload.get("entries", []) if isinstance(entry, dict)
     )
+    saved_chart_fetched_at = max(
+        (item["fetchedAt"] for item in cached_payloads.values()), default=None
+    )
     return {
         "artist": {"entityName": "Saved selections"},
         "cadence": cadence,
@@ -1700,6 +1769,8 @@ async def scan_focused_live(
         "matchingRegions": len(regions),
         "failedRegions": [item["countryName"] for item in failed],
         "marketDiagnostics": diagnostics,
+        "savedChartMarkets": sum(item.get("cacheHit", False) for item in diagnostics),
+        "savedChartFetchedAt": saved_chart_fetched_at.isoformat() if saved_chart_fetched_at else None,
         "historySavedRegions": 0,
         "historyStorageAvailable": None,
         "metadataLimitation": "Spotify did not include artist IDs for one or more album chart entries; those entries were not matched." if album_metadata_missing else None,
