@@ -10,6 +10,7 @@ import asyncpg
 import httpx
 from fastapi import HTTPException
 from Countries import Countries
+from chart_day import chart_day_start
 
 from chart_history import CHART_STEPS, parse_chart_date, save_chart_snapshot
 from spotify_charts import SpotifyCharts, parse_retry_after_delay
@@ -320,7 +321,7 @@ async def run_collection_tick(
                  SELECT 1 FROM public.spotify_chart_refresh_jobs j
                  WHERE j.chart_type = 'daily_top_songs' AND j.country_code = markets.country_code
                    AND j.status IN ('succeeded', 'complete', 'unavailable')
-                   AND (($4::timestamptz IS NULL AND j.fetched_at::date = CURRENT_DATE)
+                   AND (($4::timestamptz IS NULL AND j.fetched_at >= $6::timestamptz)
                      OR ($4::timestamptz IS NOT NULL AND j.fetched_at >= $4::timestamptz))
                )
                  AND (NOT $3::boolean OR NOT EXISTS (
@@ -337,6 +338,7 @@ async def run_collection_tick(
             include_history,
             refresh_after,
             [country.value for country in Countries],
+            chart_day_start(),
         )
     else:
         config_rows = await pool.fetch(
@@ -347,7 +349,7 @@ async def run_collection_tick(
                    SELECT 1 FROM public.spotify_chart_refresh_jobs j
                    WHERE j.chart_type = c.chart_type AND j.country_code = c.country_code
                      AND j.status IN ('succeeded', 'complete', 'unavailable')
-                     AND (($4::timestamptz IS NULL AND j.fetched_at::date = CURRENT_DATE)
+                     AND (($4::timestamptz IS NULL AND j.fetched_at >= $5::timestamptz)
                        OR ($4::timestamptz IS NOT NULL AND j.fetched_at >= $4::timestamptz))
                  )
                  AND (NOT $3::boolean OR NOT EXISTS (
@@ -364,6 +366,7 @@ async def run_collection_tick(
             remaining_chart_keys,
             include_history,
             refresh_after,
+            chart_day_start(),
         )
     requested = history_completed + history_failed + len(config_rows)
 
