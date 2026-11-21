@@ -19,13 +19,11 @@ Keep client secrets in environment variables or an untracked `.env` file. Do not
 
 ## Felix Support read API
 
-Felix Support can read cached live charts and saved history through the read-only endpoint `GET /api/integrations/felix-support/charts`. Set a dedicated `SPOTIFY_CHARTS_API_TOKEN` environment variable on this app and configure the same secret in Felix Support's server environment. Send it as `Authorization: Bearer <token>`; never expose it to browser code. Requests are rejected if the token is unset or invalid.
+Felix Support can read the same selected-entity Live chart and History page data through `GET /api/integrations/felix-support/charts`. Set `SPOTIFY_CHARTS_API_TOKEN` on this app and configure the same secret in Felix Support's server environment. Send it as `Authorization: Bearer <token>`; never expose it to browser code. Requests are rejected if the token is unset or invalid.
 
-- `view=live` returns saved latest chart payloads for all chart types and markets by default; it does not trigger a Spotify fetch. Add `type=daily_top_songs` and/or `country=GLOBAL` to filter.
-- `view=history` returns normalized saved chart snapshots. Optional `type`, `country`, `from=YYYY-MM-DD`, and `to=YYYY-MM-DD` filters narrow the results.
-- Both modes accept `limit` (1–500, default 100) and `offset` (default 0), and return `total`, `hasMore`, `limit`, and `offset` for pagination.
-
-Example: `GET /api/integrations/felix-support/charts?view=history&type=weekly_top_songs&country=GLOBAL&limit=100&offset=0`. Only data already present in the chart cache or history snapshots is returned; the endpoint does not initiate collection or expose database credentials.
+- `view=live&type=daily_top_songs` returns the selected songs or artists from the matching Live page. Supported chart types are `daily_top_songs`, `daily_viral_songs`, `weekly_top_songs`, `daily_top_artists`, `weekly_top_artists`, and `weekly_top_albums`. `scope=global` is the default; `scope=all` requests all-region results.
+- `view=history&type=daily_top_songs&year=2026&month=11` returns the History page calendar. Add `date=2026-11-19` to get that date's saved entries; `limit` (1–100, default 50) and `offset` (default 0) paginate date results. `type`, `year`, and `month` are optional.
+- Both views return their page data in the `data` field. The endpoint uses the app's Live and History data sources; it does not return the unfiltered Charts Explorer results.
 
 ## Python client
 
