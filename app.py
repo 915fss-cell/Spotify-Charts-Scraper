@@ -2215,11 +2215,12 @@ async def felix_support_charts(
     request: Request,
     view: Literal["live", "history"] = Query("live"),
     chart_type: str | None = Query(None, alias="type", min_length=1, max_length=40),
-    country: str | None = Query(None, min_length=2, max_length=6),
-    from_date: calendar_date | None = Query(None, alias="from"),
-    to_date: calendar_date | None = Query(None, alias="to"),
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0, le=10000000),
+    scope: Literal["global", "all"] = Query("global"),
+    year: int | None = Query(None, ge=1900, le=2100),
+    month: int | None = Query(None, ge=1, le=12),
+    chart_date: calendar_date | None = Query(None, alias="date"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0, le=100000),
 ) -> dict[str, Any]:
     secret = os.environ.get("SPOTIFY_CHARTS_API_TOKEN")
     authorization = request.headers.get("authorization", "")
@@ -2229,103 +2230,32 @@ async def felix_support_charts(
     if not authorization.startswith("Bearer ") or not secrets.compare_digest(supplied, secret):
         raise HTTPException(status_code=401, detail="Felix Support API authorization is invalid.")
 
-    if chart_type is not None and chart_type not in CHART_METHODS:
-        raise HTTPException(status_code=400, detail="Choose a supported chart type.")
-    normalized_country = country.upper() if country else None
-    if normalized_country and normalized_country not in {item.value for item in Countries}:
-        raise HTTPException(status_code=400, detail="Choose a country from the list.")
-    if from_date and to_date and from_date > to_date:
-        raise HTTPException(status_code=400, detail="The start date must be on or before the end date.")
-
-    pool = await get_history_pool()
     if view == "live":
-        if from_date or to_date:
+        if chart_date or year is not None or month is not None:
             raise HTTPException(status_code=400, detail="Date filters are only available for history.")
-        rows = await pool.fetch(
-            """SELECT chart_type, country_code, chart_date, payload, fetched_at
-               FROM public.spotify_chart_payload_cache
-               WHERE requested_date = 'latest'
-                 AND ($1::text IS NULL OR chart_type = $1)
-                 AND ($2::text IS NULL OR country_code = $2)
-               ORDER BY chart_type, country_code
-               LIMIT $3 OFFSET $4""",
-            chart_type, normalized_country, limit, offset,
-        )
-        total = await pool.fetchval(
-            """SELECT count(*) FROM public.spotify_chart_payload_cache
-               WHERE requested_date = 'latest'
-                 AND ($1::text IS NULL OR chart_type = $1)
-                 AND ($2::text IS NULL OR country_code = $2)""",
-            chart_type, normalized_country,
-        )
-        return {
-            "view": view,
-            "charts": [
-                {
-                    "chartType": row["chart_type"],
-                    "country": row["country_code"],
-                    "chartDate": row["chart_date"].isoformat() if row["chart_date"] else None,
-                    "fetchedAt": row["fetched_at"].isoformat(),
-                    "data": decode_json_value(row["payload"]),
-                }
-                for row in rows
-            ],
-            "total": int(total or 0),
-            "limit": limit,
-            "offset": offset,
-            "hasMore": offset + len(rows) < int(total or 0),
+        live_chart_types = {
+            "daily_top_songs": ("daily", "track"),
+            "daily_viral_songs": ("daily", "track"),
+            "weekly_top_songs": ("weekly", "track"),
+            "daily_top_artists": ("daily", "artist"),
+            "weekly_top_artists": ("weekly", "artist"),
+            "weekly_top_albums": ("weekly", "album"),
         }
+        selected_chart_type = chart_type or "daily_top_songs"
+        chart_details = live_chart_types.get(selected_chart_type)
+        if chart_details is None:
+            raise HTTPException(status_code=400, detail="Choose a supported Live chart type.")
+        cadence, entity_type = chart_details
+        data = await focused_live(cadence, entity_type, scope, False, False, selected_chart_type)
+        return {"view": view, "chartType": selected_chart_type, "data": data}
 
     if chart_type is not None and chart_type not in HISTORY_CHART_TYPES:
-        raise HTTPException(status_code=400, detail="Historical data is unavailable for this chart type.")
-    total = await pool.fetchval(
-        """SELECT count(*) FROM public.spotify_chart_snapshots
-           WHERE ($1::text IS NULL OR chart_type = $1)
-             AND ($2::text IS NULL OR country_code = $2)
-             AND ($3::date IS NULL OR chart_date >= $3)
-             AND ($4::date IS NULL OR chart_date <= $4)""",
-        chart_type, normalized_country, from_date, to_date,
-    )
-    rows = await pool.fetch(
-        """SELECT chart_type, country_code, chart_date, track_uri, entity_type,
-                  track_name, artist_names, chart_rank, previous_rank, peak_rank,
-                  consecutive_appearances, appearances, entry_date, stream_count, fetched_at
-           FROM public.spotify_chart_snapshots
-           WHERE ($1::text IS NULL OR chart_type = $1)
-             AND ($2::text IS NULL OR country_code = $2)
-             AND ($3::date IS NULL OR chart_date >= $3)
-             AND ($4::date IS NULL OR chart_date <= $4)
-           ORDER BY chart_date DESC, chart_type, country_code, chart_rank NULLS LAST, track_uri
-           LIMIT $5 OFFSET $6""",
-        chart_type, normalized_country, from_date, to_date, limit, offset,
-    )
-    return {
-        "view": view,
-        "charts": [
-            {
-                "chartType": row["chart_type"],
-                "country": row["country_code"],
-                "chartDate": row["chart_date"].isoformat(),
-                "entityUri": row["track_uri"],
-                "entityType": row["entity_type"],
-                "entityName": row["track_name"],
-                "artistNames": row["artist_names"],
-                "chartRank": row["chart_rank"],
-                "previousRank": row["previous_rank"],
-                "peakRank": row["peak_rank"],
-                "consecutiveAppearances": row["consecutive_appearances"],
-                "appearances": row["appearances"],
-                "entryDate": row["entry_date"].isoformat() if row["entry_date"] else None,
-                "streamCount": row["stream_count"],
-                "fetchedAt": row["fetched_at"].isoformat(),
-            }
-            for row in rows
-        ],
-        "total": int(total or 0),
-        "limit": limit,
-        "offset": offset,
-        "hasMore": offset + len(rows) < int(total or 0),
-    }
+        raise HTTPException(status_code=400, detail="Choose a supported History chart type.")
+    if chart_date is not None:
+        data = await history_date_results(chart_date, limit, offset, chart_type)
+        return {"view": view, "chartType": chart_type, "data": data}
+    data = await history_calendar(year, month, chart_type)
+    return {"view": view, "chartType": chart_type, "data": data}
 
 
 @app.get("/api/charts")

@@ -1,6 +1,6 @@
 import os
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -10,76 +10,61 @@ from app import felix_support_charts
 
 
 class FelixSupportApiTests(unittest.IsolatedAsyncioTestCase):
-    async def test_rejects_missing_or_invalid_bearer_token(self):
+    async def test_rejects_invalid_bearer_token(self):
         request = SimpleNamespace(headers={"authorization": "Bearer wrong"})
         with patch.dict(os.environ, {"SPOTIFY_CHARTS_API_TOKEN": "correct"}, clear=False):
             with self.assertRaises(HTTPException) as raised:
                 await felix_support_charts(
-                    request, "live", None, None, None, None, 100, 0
+                    request, "live", None, "global", None, None, None, 50, 0
                 )
         self.assertEqual(raised.exception.status_code, 401)
 
-    async def test_live_view_returns_saved_chart_payloads(self):
-        fetched_at = datetime(2026, 11, 20, tzinfo=timezone.utc)
-        pool = SimpleNamespace(
-            fetch=AsyncMock(return_value=[{
-                "chart_type": "daily_top_songs",
-                "country_code": "GLOBAL",
-                "chart_date": date(2026, 11, 20),
-                "payload": {"entries": [{"id": "track-1"}]},
-                "fetched_at": fetched_at,
-            }]),
-            fetchval=AsyncMock(return_value=1),
-        )
+    async def test_live_view_uses_selected_entity_live_chart_data(self):
         request = SimpleNamespace(headers={"authorization": "Bearer correct"})
+        focused_result = {"releases": [{"entityName": "Song"}], "regions": []}
         with (
             patch.dict(os.environ, {"SPOTIFY_CHARTS_API_TOKEN": "correct"}, clear=False),
-            patch("app.get_history_pool", AsyncMock(return_value=pool)),
+            patch("app.focused_live", AsyncMock(return_value=focused_result)) as focused_live,
         ):
             result = await felix_support_charts(
-                request, "live", None, None, None, None, 100, 0
+                request, "live", "daily_top_songs", "global", None, None, None, 50, 0
             )
 
+        focused_live.assert_awaited_once_with(
+            "daily", "track", "global", False, False, "daily_top_songs"
+        )
         self.assertEqual(result["view"], "live")
-        self.assertEqual(result["total"], 1)
-        self.assertEqual(result["charts"][0]["chartType"], "daily_top_songs")
-        self.assertEqual(result["charts"][0]["data"]["entries"][0]["id"], "track-1")
+        self.assertEqual(result["data"], focused_result)
 
-    async def test_history_view_returns_paginated_snapshot_records(self):
-        fetched_at = datetime(2026, 11, 20, tzinfo=timezone.utc)
-        pool = SimpleNamespace(
-            fetch=AsyncMock(return_value=[{
-                "chart_type": "daily_top_songs",
-                "country_code": "GLOBAL",
-                "chart_date": date(2026, 11, 20),
-                "track_uri": "spotify:track:123",
-                "entity_type": "track",
-                "track_name": "Song",
-                "artist_names": ["Artist"],
-                "chart_rank": 1,
-                "previous_rank": 2,
-                "peak_rank": 1,
-                "consecutive_appearances": 3,
-                "appearances": 5,
-                "entry_date": date(2026, 11, 16),
-                "stream_count": 12345,
-                "fetched_at": fetched_at,
-            }]),
-            fetchval=AsyncMock(return_value=3),
-        )
+    async def test_history_calendar_uses_history_page_data(self):
         request = SimpleNamespace(headers={"authorization": "Bearer correct"})
+        calendar_result = {"year": 2026, "month": 11, "days": []}
         with (
             patch.dict(os.environ, {"SPOTIFY_CHARTS_API_TOKEN": "correct"}, clear=False),
-            patch("app.get_history_pool", AsyncMock(return_value=pool)),
+            patch("app.history_calendar", AsyncMock(return_value=calendar_result)) as history_calendar,
         ):
             result = await felix_support_charts(
-                request, "history", "daily_top_songs", "GLOBAL", None, None, 1, 1
+                request, "history", "daily_top_songs", "global", 2026, 11, None, 50, 0
             )
 
-        self.assertEqual(result["total"], 3)
-        self.assertTrue(result["hasMore"])
-        self.assertEqual(result["charts"][0]["entityName"], "Song")
-        self.assertEqual(result["charts"][0]["streamCount"], 12345)
+        history_calendar.assert_awaited_once_with(2026, 11, "daily_top_songs")
+        self.assertEqual(result["view"], "history")
+        self.assertEqual(result["data"], calendar_result)
+
+    async def test_history_date_uses_selected_day_results(self):
+        request = SimpleNamespace(headers={"authorization": "Bearer correct"})
+        day_result = {"chart_date": "2026-11-19", "items": [{"track_name": "Song"}]}
+        with (
+            patch.dict(os.environ, {"SPOTIFY_CHARTS_API_TOKEN": "correct"}, clear=False),
+            patch("app.history_date_results", AsyncMock(return_value=day_result)) as history_date,
+        ):
+            result = await felix_support_charts(
+                request, "history", "daily_top_songs", "global", None, None,
+                date(2026, 11, 19), 25, 10,
+            )
+
+        history_date.assert_awaited_once_with(date(2026, 11, 19), 25, 10, "daily_top_songs")
+        self.assertEqual(result["data"], day_result)
 
 
 if __name__ == "__main__":
