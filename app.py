@@ -16,6 +16,7 @@ from fastapi import Cookie, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
+from chart_day import chart_day_start, current_chart_day
 from chart_history import (
     CHART_STEPS,
     ChartHistoryStorageError,
@@ -108,8 +109,8 @@ async def read_same_day_chart_payloads(
     rows = await pool.fetch(
         """SELECT country_code, payload, fetched_at FROM public.spotify_chart_payload_cache
            WHERE chart_type = $1 AND requested_date = 'latest'
-             AND country_code = ANY($2::text[]) AND fetched_at::date = CURRENT_DATE""",
-        chart_type, country_codes,
+             AND country_code = ANY($2::text[]) AND fetched_at >= $3::timestamptz""",
+        chart_type, country_codes, chart_day_start(),
     )
     payloads: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -139,8 +140,8 @@ async def read_focused_result_snapshot(
     pool = await get_history_pool()
     row = await pool.fetchrow(
         """SELECT payload, fetched_at FROM public.spotify_focused_chart_snapshots
-           WHERE cadence=$1 AND entity_type=$2 AND market_scope='all' AND snapshot_date=CURRENT_DATE""",
-        cadence, entity_type,
+           WHERE cadence=$1 AND entity_type=$2 AND market_scope='all' AND snapshot_date=$3""",
+        cadence, entity_type, current_chart_day(),
     )
     if not row:
         return None
@@ -170,8 +171,8 @@ async def read_legacy_focused_scan(cadence: str, entity_type: str, chart_type: s
                   (SELECT max(created_at) FROM public.spotify_chart_selections) AS latest_selection_at
            FROM public.spotify_focused_scan_jobs
            WHERE cadence=$1 AND entity_type=$2 AND status IN ('complete','partial')
-             AND updated_at::date=CURRENT_DATE""",
-        cadence, entity_type,
+             AND updated_at >= $3::timestamptz""",
+        cadence, entity_type, chart_day_start(),
     )
     if not row or row["archived_selections"] or (
         row["latest_selection_at"] is not None and row["latest_selection_at"] > row["updated_at"]
@@ -208,6 +209,77 @@ def focused_response_for_scope(response: dict[str, Any], scope: str) -> dict[str
     return result
 
 
+def merge_focused_live_responses(
+    saved: dict[str, Any] | None, current: dict[str, Any]
+) -> dict[str, Any]:
+    if not saved:
+        return current
+    diagnostics = {item.get("countryCode"): item for item in saved.get("marketDiagnostics", []) if item.get("countryCode")}
+    regions = {item.get("regionCode"): item for item in saved.get("regions", []) if item.get("regionCode")}
+    current_regions = {item.get("regionCode"): item for item in current.get("regions", []) if item.get("regionCode")}
+    for item in current.get("marketDiagnostics", []):
+        code = item.get("countryCode")
+        if not code:
+            continue
+        existing = diagnostics.get(code)
+        if item.get("status") == "succeeded" or existing is None or existing.get("status") != "succeeded":
+            diagnostics[code] = item
+            if item.get("status") == "succeeded":
+                if code in current_regions:
+                    regions[code] = current_regions[code]
+                else:
+                    regions.pop(code, None)
+    ordered_diagnostics = sorted(diagnostics.values(), key=lambda item: (item.get("countryCode") != "GLOBAL", item.get("countryName", "")))
+    ordered_regions = sorted(regions.values(), key=lambda item: (item.get("regionCode") != "GLOBAL", item.get("regionName", "")))
+    releases: dict[str, dict[str, Any]] = {}
+    for region in ordered_regions:
+        for entry in region.get("entries", []):
+            release = releases.setdefault(entry["entityUri"], {
+                "entityUri": entry["entityUri"], "entityType": entry["entityType"],
+                "entityName": entry["entityName"], "artistNames": entry.get("artistNames", ""),
+                "imageUrl": entry.get("imageUrl"), "regions": [],
+            })
+            release["regions"].append({key: value for key, value in entry.items()
+                                        if key not in {"entityUri", "entityType", "entityName", "artistNames", "imageUrl"}})
+    release_items = sorted(releases.values(), key=lambda item: (-len(item["regions"]), item["entityName"].casefold()))
+    failed = [item for item in ordered_diagnostics if item.get("status") == "failed"]
+    pending_codes = set(saved.get("pendingMarkets", [])) | set(current.get("pendingMarkets", []))
+    for item in ordered_diagnostics:
+        code = item.get("countryCode")
+        if not code:
+            continue
+        if item.get("status") == "pending":
+            pending_codes.add(code)
+        elif item.get("status") in {"succeeded", "failed"}:
+            pending_codes.discard(code)
+    saved_fetched_at = saved.get("savedChartFetchedAt")
+    current_fetched_at = current.get("savedChartFetchedAt")
+    fetched_at = current_fetched_at or saved_fetched_at
+    if saved_fetched_at and current_fetched_at:
+        try:
+            saved_time = datetime.fromisoformat(str(saved_fetched_at).replace("Z", "+00:00"))
+            current_time = datetime.fromisoformat(str(current_fetched_at).replace("Z", "+00:00"))
+            fetched_at = max(saved_fetched_at, current_fetched_at) if saved_time >= current_time else current_fetched_at
+        except ValueError:
+            fetched_at = current_fetched_at
+    return {
+        **saved,
+        **current,
+        "marketScope": "all",
+        "marketsTotal": max(int(saved.get("marketsTotal", 0)), int(current.get("marketsTotal", 0))),
+        "marketsScanned": sum(item.get("status") == "succeeded" for item in ordered_diagnostics),
+        "matchingRegions": len(ordered_regions),
+        "failedRegions": [item.get("countryName", item.get("countryCode")) for item in failed],
+        "pendingMarkets": sorted(pending_codes),
+        "marketDiagnostics": ordered_diagnostics,
+        "regions": ordered_regions,
+        "releases": release_items,
+        "savedChartFetchedAt": fetched_at,
+        "savedChartMarkets": max(int(saved.get("savedChartMarkets", 0)), int(current.get("savedChartMarkets", 0))),
+        "scanInProgress": bool(pending_codes),
+    }
+
+
 async def save_focused_result_snapshot(
     pool: Any,
     cadence: str,
@@ -228,7 +300,7 @@ async def save_focused_result_snapshot(
     await pool.execute(
         """INSERT INTO public.spotify_focused_chart_snapshots
                (cadence, entity_type, market_scope, snapshot_date, payload, fetched_at)
-           VALUES ($1, $2, 'all', CURRENT_DATE, jsonb_build_object('results', $3::jsonb), now())
+           VALUES ($1, $2, 'all', $5::date, jsonb_build_object('results', $3::jsonb), now())
            ON CONFLICT (cadence, entity_type, market_scope, snapshot_date) DO UPDATE
            SET payload = jsonb_build_object(
                    'results',
@@ -243,7 +315,7 @@ async def save_focused_result_snapshot(
                    ), '[]'::jsonb) || (EXCLUDED.payload->'results')
                ),
                fetched_at = now()""",
-        cadence, entity_type, json.dumps([snapshot], separators=(",", ":")), cache_key,
+        cadence, entity_type, json.dumps([snapshot], separators=(",", ":")), cache_key, current_chart_day(),
     )
 
 
@@ -287,6 +359,38 @@ async def save_focused_results_to_history(pool: Any, chart_type: str, response: 
             await save_chart_snapshot(pool, chart_type, country_code, chart_date, entries)
             saved_regions.add(country_code)
     return len(saved_regions)
+
+
+async def persist_focused_live_response(
+    cadence: str,
+    entity_type: str,
+    scope: str,
+    chart_type: str,
+    selection_fingerprint: str,
+    response: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        pool = await get_history_pool()
+    except Exception as error:
+        print(f"[v0] Focused Live storage unavailable: {type(error).__name__}")
+        response["snapshotSaved"] = False
+        response["historyStorageAvailable"] = False
+        response.setdefault("historySavedRegions", 0)
+        return response
+    try:
+        await save_focused_result_snapshot(pool, cadence, entity_type, scope, chart_type, selection_fingerprint, response)
+        response["snapshotSaved"] = True
+    except Exception as error:
+        print(f"[v0] Focused Live snapshot save failed: {type(error).__name__}")
+        response["snapshotSaved"] = False
+    try:
+        response["historySavedRegions"] = await save_focused_results_to_history(pool, chart_type, response)
+        response["historyStorageAvailable"] = True
+    except Exception as error:
+        print(f"[v0] Focused History save failed: {type(error).__name__}")
+        response["historySavedRegions"] = 0
+        response["historyStorageAvailable"] = False
+    return response
 
 
 def chart_delivery(payload: dict[str, Any], fetched_at: Any, status: str) -> dict[str, Any]:
@@ -1416,10 +1520,11 @@ def pending_focused_scan(cadence: str, entity_type: str, chart_type: str | None 
         "entityType": entity_type,
         "chartType": chart_type,
         "marketScope": "all",
-        "marketsTotal": len(Countries),
+        "marketsTotal": len(list(Countries)),
         "marketsScanned": 0,
         "matchingRegions": 0,
         "failedRegions": [],
+        "pendingMarkets": [country.value for country in Countries],
         "marketDiagnostics": [],
         "historySavedRegions": 0,
         "historyStorageAvailable": None,
@@ -1430,20 +1535,50 @@ def pending_focused_scan(cadence: str, entity_type: str, chart_type: str | None 
 
 
 async def run_focused_scan_and_cache(
-    cache_key: tuple[str, ...], cadence: str, entity_type: str, scope: str, chart_type: str
+    cache_key: tuple[str, ...], cadence: str, entity_type: str, scope: str, chart_type: str,
+    initial_response: dict[str, Any] | None = None,
 ) -> None:
-    response: dict[str, Any] | None = None
+    response: dict[str, Any] | None = dict(initial_response) if initial_response else None
     try:
-        response = await scan_focused_live(cadence, entity_type, scope, chart_type)
+        scan_country_codes = None
+        if initial_response:
+            all_country_codes = {country.value for country in Countries}
+            scan_country_codes = set(initial_response.get("pendingMarkets", []))
+            scan_country_codes.update(
+                item.get("countryCode") for item in initial_response.get("marketDiagnostics", [])
+                if item.get("status") in {"pending", "failed"} and item.get("countryCode")
+            )
+            if not scan_country_codes:
+                completed_codes = {
+                    item.get("countryCode") for item in initial_response.get("marketDiagnostics", [])
+                    if item.get("status") == "succeeded" and item.get("countryCode")
+                }
+                scan_country_codes = all_country_codes - completed_codes
+            if not scan_country_codes:
+                scan_country_codes = all_country_codes
+
+        async def persist_partial(partial: dict[str, Any]) -> None:
+            nonlocal response
+            partial = merge_focused_live_responses(initial_response, partial) if initial_response else partial
+            response = await persist_focused_live_response(
+                cadence, entity_type, scope, chart_type, cache_key[4], partial
+            )
+            async with focused_chart_cache_lock:
+                focused_chart_cache[cache_key] = (time.monotonic(), dict(response))
+
+        scanned_response = await scan_focused_live(
+            cadence, entity_type, scope, chart_type,
+            country_codes=scan_country_codes, on_market_complete=persist_partial,
+        )
+        response = merge_focused_live_responses(initial_response, scanned_response) if initial_response else scanned_response
+        response = await persist_focused_live_response(
+            cadence, entity_type, scope, chart_type, cache_key[4], response
+        )
         pool = await get_history_pool()
-        await save_focused_result_snapshot(pool, cadence, entity_type, scope, chart_type, cache_key[4], response)
-        response["snapshotSaved"] = True
-        response["historyStorageAvailable"] = True
-        response["historySavedRegions"] = await save_focused_results_to_history(pool, chart_type, response)
         if scope == "all":
             failed_markets = [item for item in response["marketDiagnostics"] if item["status"] == "failed"]
             completed_markets = [item["countryCode"] for item in response["marketDiagnostics"] if item["status"] == "succeeded"]
-            status = "partial" if failed_markets else "complete"
+            status = "partial" if failed_markets or response.get("pendingMarkets") else "complete"
             await pool.execute(
                 """UPDATE public.spotify_focused_scan_jobs
                    SET status=$3, completed_markets=$4, failed_markets=$5::jsonb,
@@ -1459,14 +1594,34 @@ async def run_focused_scan_and_cache(
             response.update({
                 "scanInProgress": False,
                 "scanError": f"The regional scan stopped before market results were available ({type(error).__name__}).",
-                "failedRegions": [],
-                "marketDiagnostics": [],
+                "failedRegions": [COUNTRY_NAMES.get(code, code) for code in response.get("pendingMarkets", [])],
+                "marketDiagnostics": [
+                    {"countryCode": code, "countryName": COUNTRY_NAMES.get(code, code), "chartType": chart_type, "status": "failed", "error": type(error).__name__}
+                    for code in response.get("pendingMarkets", [])
+                ],
+                "pendingMarkets": [],
             })
         else:
+            pending_codes = list(response.get("pendingMarkets", []))
+            existing_diagnostics = {item.get("countryCode"): item for item in response.get("marketDiagnostics", [])}
+            for code in pending_codes:
+                existing_diagnostics[code] = {
+                    "countryCode": code, "countryName": COUNTRY_NAMES.get(code, code),
+                    "chartType": chart_type, "status": "failed", "error": type(error).__name__,
+                }
             response.update({
                 "scanInProgress": False,
-                "scanError": "The regional scan finished, but its results could not be saved for recovery.",
+                "scanError": "The regional scan stopped; results already saved for completed markets remain available.",
+                "marketDiagnostics": list(existing_diagnostics.values()),
+                "failedRegions": [item.get("countryName", item.get("countryCode")) for item in existing_diagnostics.values() if item.get("status") == "failed"],
+                "pendingMarkets": [],
+                "marketsScanned": sum(item.get("status") == "succeeded" for item in existing_diagnostics.values()),
             })
+            try:
+                pool = await get_history_pool()
+                await save_focused_result_snapshot(pool, cadence, entity_type, scope, chart_type, cache_key[4], response)
+            except Exception:
+                pass
         if scope == "all":
             try:
                 pool = await get_history_pool()
@@ -1556,15 +1711,21 @@ async def focused_live(
         return combined
 
     saved_chart_payloads: dict[str, dict[str, Any]] = {}
-    if scope == "global":
+    if scope in {"global", "all"}:
         try:
-            saved_chart_payloads = await read_same_day_chart_payloads(selected_chart_type, [Countries.GLOBAL.value])
+            market_codes = [Countries.GLOBAL.value] if scope == "global" else [country.value for country in Countries]
+            saved_chart_payloads = await read_same_day_chart_payloads(selected_chart_type, market_codes)
         except Exception as error:
             print(f"[v0] Today's saved chart lookup failed: {type(error).__name__}")
     async with focused_chart_cache_lock:
         cached = focused_chart_cache.get(cache_key)
         cached_needs_refresh = cached and saved_chart_cache_is_newer(cached[1], saved_chart_payloads)
-        if not refresh and cached and not cached_needs_refresh and time.monotonic() - cached[0] < FOCUSED_CHART_CACHE_TTL:
+        cached_scan_in_progress = bool(cached and cached[1].get("scanInProgress"))
+        if (
+            not refresh and cached and not cached_needs_refresh
+            and not (scope == "all" and cached_scan_in_progress)
+            and time.monotonic() - cached[0] < FOCUSED_CHART_CACHE_TTL
+        ):
             return cached[1]
         if refresh or cached_needs_refresh:
             focused_chart_cache.pop(cache_key, None)
@@ -1576,13 +1737,79 @@ async def focused_live(
     except Exception as error:
         print(f"[v0] Focused Live snapshot lookup failed: {type(error).__name__}")
         snapshot = None
-    if snapshot is not None and not saved_chart_cache_is_newer(snapshot, saved_chart_payloads):
+    snapshot_needs_refresh = saved_chart_cache_is_newer(snapshot or {}, saved_chart_payloads)
+
+    if scope == "all":
+        legacy_snapshot = False
+        if snapshot is not None and not refresh and not snapshot_needs_refresh and not snapshot.get("scanInProgress"):
+            async with focused_chart_cache_lock:
+                focused_chart_cache[cache_key] = (time.monotonic(), snapshot)
+            return snapshot
+
+        if snapshot is None:
+            try:
+                previous_scan = await read_legacy_focused_scan(cadence, entity_type, selected_chart_type)
+            except Exception as error:
+                print(f"[v0] Previous focused scan lookup failed: {type(error).__name__}")
+                previous_scan = None
+            if previous_scan is not None:
+                snapshot = focused_response_for_scope(previous_scan, "all")
+                legacy_snapshot = True
+
+        if legacy_snapshot and not refresh and not snapshot_needs_refresh:
+            response = dict(snapshot)
+            response["snapshotReused"] = True
+            response = await persist_focused_live_response(
+                cadence, entity_type, "all", selected_chart_type, selection_fingerprint, response
+            )
+            async with focused_chart_cache_lock:
+                focused_chart_cache[cache_key] = (time.monotonic(), response)
+            return response
+
+        if snapshot is not None and not legacy_snapshot and not refresh and not snapshot_needs_refresh and snapshot.get("scanInProgress"):
+            response = snapshot
+        else:
+            cached_response = await scan_focused_live(
+                cadence, entity_type, "all", selected_chart_type,
+                cached_payloads=saved_chart_payloads, fetch_missing=False,
+            )
+            response = merge_focused_live_responses(snapshot, cached_response)
+            response["snapshotReused"] = snapshot is not None and not snapshot_needs_refresh
+            response = await persist_focused_live_response(
+                cadence, entity_type, "all", selected_chart_type, selection_fingerprint, response
+            )
+
+        if response.get("scanInProgress"):
+            async with focused_chart_cache_lock:
+                task = focused_chart_scan_tasks.get(cache_key)
+                if task is None or task.done():
+                    try:
+                        pool = await get_history_pool()
+                        await pool.execute(
+                            """INSERT INTO public.spotify_focused_scan_jobs (cadence, entity_type, status)
+                               VALUES ($1, $2, 'pending') ON CONFLICT (cadence, entity_type) DO UPDATE
+                               SET status='pending', updated_at=now()""",
+                            cadence, entity_type,
+                        )
+                    except Exception as error:
+                        print(f"[v0] Focused scan job could not be registered: {type(error).__name__}")
+                    task = asyncio.create_task(
+                        run_focused_scan_and_cache(
+                            cache_key, cadence, entity_type, "all", selected_chart_type, dict(response)
+                        )
+                    )
+                    focused_chart_scan_tasks[cache_key] = task
+        async with focused_chart_cache_lock:
+            focused_chart_cache[cache_key] = (time.monotonic(), dict(response))
+        return response
+
+    if snapshot is not None and not refresh and not snapshot_needs_refresh:
         async with focused_chart_cache_lock:
             focused_chart_cache[cache_key] = (time.monotonic(), snapshot)
         return snapshot
 
     try:
-        previous_scan = None if saved_chart_cache_is_newer(snapshot or {}, saved_chart_payloads) else await read_legacy_focused_scan(
+        previous_scan = None if snapshot_needs_refresh else await read_legacy_focused_scan(
             cadence, entity_type, selected_chart_type
         )
     except Exception as error:
@@ -1591,57 +1818,20 @@ async def focused_live(
     if previous_scan is not None:
         response = focused_response_for_scope(previous_scan, scope)
         response["snapshotReused"] = True
-        try:
-            pool = await get_history_pool()
-            await save_focused_result_snapshot(
-                pool, cadence, entity_type, scope, selected_chart_type, selection_fingerprint, response
-            )
-            response["snapshotSaved"] = True
-            response["historyStorageAvailable"] = True
-            response["historySavedRegions"] = await save_focused_results_to_history(pool, selected_chart_type, response)
-        except Exception as error:
-            print(f"[v0] Previous focused scan could not be archived: {type(error).__name__}")
-            response["snapshotSaved"] = False
-            response["historyStorageAvailable"] = False
-            response["historySavedRegions"] = 0
+        response = await persist_focused_live_response(
+            cadence, entity_type, scope, selected_chart_type, selection_fingerprint, response
+        )
         async with focused_chart_cache_lock:
             focused_chart_cache[cache_key] = (time.monotonic(), response)
         return response
-
-    if scope == "all":
-        async with focused_chart_cache_lock:
-            task = focused_chart_scan_tasks.get(cache_key)
-            if task is None or task.done():
-                pool = await get_history_pool()
-                await pool.execute(
-                    """INSERT INTO public.spotify_focused_scan_jobs (cadence, entity_type, status)
-                       VALUES ($1, $2, 'pending') ON CONFLICT (cadence, entity_type) DO UPDATE
-                       SET status='pending', updated_at=now()""",
-                    cadence, entity_type,
-                )
-                task = asyncio.create_task(
-                    run_focused_scan_and_cache(cache_key, cadence, entity_type, scope, selected_chart_type)
-                )
-                focused_chart_scan_tasks[cache_key] = task
-            return pending_focused_scan(cadence, entity_type, selected_chart_type)
 
     response = await scan_focused_live(
         cadence, entity_type, scope, selected_chart_type,
         cached_payloads=saved_chart_payloads or None,
     )
-    try:
-        pool = await get_history_pool()
-        await save_focused_result_snapshot(
-            pool, cadence, entity_type, scope, selected_chart_type, selection_fingerprint, response
-        )
-        response["snapshotSaved"] = True
-        response["historyStorageAvailable"] = True
-        response["historySavedRegions"] = await save_focused_results_to_history(pool, selected_chart_type, response)
-    except Exception as error:
-        print(f"[v0] Focused Live snapshot save failed: {type(error).__name__}")
-        response["snapshotSaved"] = False
-        response["historyStorageAvailable"] = False
-        response["historySavedRegions"] = 0
+    response = await persist_focused_live_response(
+        cadence, entity_type, scope, selected_chart_type, selection_fingerprint, response
+    )
     async with focused_chart_cache_lock:
         focused_chart_cache[cache_key] = (time.monotonic(), response)
     return response
@@ -1654,6 +1844,8 @@ async def scan_focused_live(
     chart_type: str | None = None,
     country_codes: set[str] | None = None,
     cached_payloads: dict[str, dict[str, Any]] | None = None,
+    fetch_missing: bool = True,
+    on_market_complete=None,
 ) -> dict[str, Any]:
     chart_type = chart_type or f"{cadence}_top_{ {'track': 'songs', 'artist': 'artists', 'album': 'albums'}[entity_type] }"
     selections = await read_selected_entities()
@@ -1671,12 +1863,19 @@ async def scan_focused_live(
             print(f"[v0] Today's saved chart lookup failed: {type(error).__name__}")
             cached_payloads = {}
     uncached_markets = [country for country in markets if country.value not in cached_payloads]
-    scraper = await get_spotify_scraper() if uncached_markets else None
+    scraper = await get_spotify_scraper() if uncached_markets and fetch_missing else None
     method = getattr(scraper, CHART_METHODS[chart_type]) if scraper else None
     semaphore = asyncio.Semaphore(2)
 
     async def fetch_market(country) -> tuple[Any, dict[str, Any] | None, dict[str, Any]]:
         cached_chart = cached_payloads.get(country.value)
+        if cached_chart is None and not fetch_missing:
+            return country, None, {
+                "attemptCount": 0, "httpStatus": None, "timeout": False, "rateLimited": False,
+                "cacheHit": False, "countryCode": country.value,
+                "countryName": COUNTRY_NAMES.get(country.value, country.value),
+                "chartType": chart_type, "status": "pending",
+            }
         try:
             if cached_chart is not None:
                 payload = cached_chart["payload"]
@@ -1713,71 +1912,84 @@ async def scan_focused_live(
             })
             return country, None, diagnostic
 
-    results = await asyncio.gather(*(fetch_market(country) for country in markets))
-    releases: dict[str, dict[str, Any]] = {}
-    regions: list[dict[str, Any]] = []
-    diagnostics: list[dict[str, Any]] = []
-    for country, payload, diagnostic in results:
-        diagnostics.append(diagnostic)
-        if payload is None:
-            continue
-        chart_date = str((payload.get("displayChart") or {}).get("date") or "Latest")
-        region_items = []
-        for entry in payload["entries"]:
-            if not isinstance(entry, dict) or not live_entry_matches(
-                entry, chart_type, selected_artist_uris, selected_track_uris
+    def build_response(results, pending_codes=None):
+        releases: dict[str, dict[str, Any]] = {}
+        regions: list[dict[str, Any]] = []
+        diagnostics: list[dict[str, Any]] = []
+        album_metadata_missing = False
+        for country, payload, diagnostic in results:
+            diagnostics.append(diagnostic)
+            if payload is None:
+                continue
+            if chart_type == "weekly_top_albums" and selected_artist_uris and any(
+                not metadata_artist_uris(entry.get("albumMetadata") or {})
+                for entry in payload.get("entries", []) if isinstance(entry, dict)
             ):
-                continue
-            item = focused_chart_item(entry, country.value, chart_date)
-            if not item or not item["entityUri"]:
-                continue
-            region_items.append(item)
-            release = releases.setdefault(item["entityUri"], {
-                "entityUri": item["entityUri"], "entityType": item["entityType"],
-                "entityName": item["entityName"], "artistNames": item["artistNames"],
-                "imageUrl": item["imageUrl"], "regions": [],
-            })
-            release["regions"].append({key: value for key, value in item.items()
-                                        if key not in {"entityUri", "entityType", "entityName", "artistNames", "imageUrl"}})
-        if region_items:
-            region_items.sort(key=lambda item: item["chartRank"] or 10_000)
-            regions.append({"regionCode": country.value, "regionName": COUNTRY_NAMES.get(country.value, country.value),
-                            "chartDate": chart_date, "entries": region_items})
+                album_metadata_missing = True
+            chart_date = str((payload.get("displayChart") or {}).get("date") or "Latest")
+            region_items = []
+            for entry in payload["entries"]:
+                if not isinstance(entry, dict) or not live_entry_matches(
+                    entry, chart_type, selected_artist_uris, selected_track_uris
+                ):
+                    continue
+                item = focused_chart_item(entry, country.value, chart_date)
+                if not item or not item["entityUri"]:
+                    continue
+                region_items.append(item)
+                release = releases.setdefault(item["entityUri"], {
+                    "entityUri": item["entityUri"], "entityType": item["entityType"],
+                    "entityName": item["entityName"], "artistNames": item["artistNames"],
+                    "imageUrl": item["imageUrl"], "regions": [],
+                })
+                release["regions"].append({key: value for key, value in item.items()
+                                            if key not in {"entityUri", "entityType", "entityName", "artistNames", "imageUrl"}})
+            if region_items:
+                region_items.sort(key=lambda item: item["chartRank"] or 10_000)
+                regions.append({"regionCode": country.value, "regionName": COUNTRY_NAMES.get(country.value, country.value),
+                                "chartDate": chart_date, "entries": region_items})
+        failed = [item for item in diagnostics if item["status"] == "failed"]
+        pending = [item.get("countryCode") for item in diagnostics if item["status"] == "pending"]
+        pending.extend(code for code in (pending_codes or []) if code not in pending)
+        if not regions and failed and scope == "global":
+            raise HTTPException(status_code=502, detail={"message": "Spotify could not load the Global chart.", "marketDiagnostics": diagnostics})
+        regions.sort(key=lambda region: (region["regionCode"] != "GLOBAL", region["regionName"]))
+        release_items = list(releases.values())
+        release_items.sort(key=lambda release: (-len(release["regions"]), release["entityName"].casefold()))
+        saved_chart_fetched_at = max((item["fetchedAt"] for item in cached_payloads.values()), default=None)
+        return {
+            "artist": {"entityName": "Saved selections"},
+            "cadence": cadence,
+            "entityType": entity_type,
+            "chartType": chart_type,
+            "marketScope": scope,
+            "marketsTotal": len(list(Countries)) if scope == "all" else len(markets),
+            "marketsScanned": sum(item["status"] == "succeeded" for item in diagnostics),
+            "matchingRegions": len(regions),
+            "failedRegions": [item["countryName"] for item in failed],
+            "pendingMarkets": pending,
+            "marketDiagnostics": diagnostics,
+            "savedChartMarkets": sum(item.get("cacheHit", False) for item in diagnostics),
+            "savedChartFetchedAt": saved_chart_fetched_at.isoformat() if saved_chart_fetched_at else None,
+            "historySavedRegions": 0,
+            "historyStorageAvailable": None,
+            "metadataLimitation": "Spotify did not include artist IDs for one or more album chart entries; those entries were not matched." if album_metadata_missing else None,
+            "releases": release_items,
+            "regions": regions,
+            "scanInProgress": bool(pending),
+        }
 
-    failed = [item for item in diagnostics if item["status"] == "failed"]
-    if not regions and failed and scope == "global":
-        raise HTTPException(status_code=502, detail={"message": "Spotify could not load the Global chart.", "marketDiagnostics": diagnostics})
-    regions.sort(key=lambda region: (region["regionCode"] != "GLOBAL", region["regionName"]))
-    release_items = list(releases.values())
-    release_items.sort(key=lambda release: (-len(release["regions"]), release["entityName"].casefold()))
-    album_metadata_missing = chart_type == "weekly_top_albums" and bool(selected_artist_uris) and any(
-        not metadata_artist_uris(entry.get("albumMetadata") or {})
-        for _, payload, _ in results if payload
-        for entry in payload.get("entries", []) if isinstance(entry, dict)
-    )
-    saved_chart_fetched_at = max(
-        (item["fetchedAt"] for item in cached_payloads.values()), default=None
-    )
-    return {
-        "artist": {"entityName": "Saved selections"},
-        "cadence": cadence,
-        "entityType": entity_type,
-        "chartType": chart_type,
-        "marketScope": scope,
-        "marketsTotal": len(markets),
-        "marketsScanned": len(markets) - len(failed),
-        "matchingRegions": len(regions),
-        "failedRegions": [item["countryName"] for item in failed],
-        "marketDiagnostics": diagnostics,
-        "savedChartMarkets": sum(item.get("cacheHit", False) for item in diagnostics),
-        "savedChartFetchedAt": saved_chart_fetched_at.isoformat() if saved_chart_fetched_at else None,
-        "historySavedRegions": 0,
-        "historyStorageAvailable": None,
-        "metadataLimitation": "Spotify did not include artist IDs for one or more album chart entries; those entries were not matched." if album_metadata_missing else None,
-        "releases": release_items,
-        "regions": regions,
-        "scanInProgress": False,
-    }
+    tasks = [asyncio.create_task(fetch_market(country)) for country in markets]
+    results = []
+    completed_codes: set[str] = set()
+    for task in asyncio.as_completed(tasks):
+        result = await task
+        results.append(result)
+        completed_codes.add(result[0].value)
+        if on_market_complete is not None and len(completed_codes) < len(markets):
+            response = build_response(results, [country.value for country in markets if country.value not in completed_codes])
+            await on_market_complete(response)
+    return build_response(results)
 
 
 def history_start_date(range_value: str) -> calendar_date | None:

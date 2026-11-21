@@ -248,12 +248,13 @@ class LiveSelectionTests(unittest.TestCase):
                  patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), \
                  patch.object(app, "scan_focused_live", new=AsyncMock(side_effect=AssertionError("Should reuse today's scan"))) as scan:
                 result = await app.focused_live(
-                    cadence="daily", entity_type="track", scope="all", refresh=True, chart_type="daily_top_songs"
+                    cadence="daily", entity_type="track", scope="all", refresh=False, chart_type="daily_top_songs"
                 )
 
             self.assertTrue(result["snapshotReused"])
             self.assertEqual(result["regions"][0]["regionCode"], "US")
-            self.assertIn("snapshot_date=CURRENT_DATE", pool.fetchrow.await_args.args[0])
+            self.assertIn("snapshot_date=$3", pool.fetchrow.await_args.args[0])
+            self.assertEqual(pool.fetchrow.await_args.args[3], app.current_chart_day())
             scan.assert_not_awaited()
             app.focused_chart_cache.pop(cache_key, None)
 
@@ -297,7 +298,7 @@ class LiveSelectionTests(unittest.TestCase):
                  patch.object(app, "save_focused_results_to_history", new=AsyncMock(return_value=1)), \
                  patch.object(app, "scan_focused_live", new=AsyncMock(side_effect=AssertionError("Should reuse today's completed scan"))) as scan:
                 result = await app.focused_live(
-                    cadence="daily", entity_type="track", scope="all", chart_type="daily_top_songs"
+                    cadence="daily", entity_type="track", scope="all", refresh=False, chart_type="daily_top_songs"
                 )
 
             self.assertTrue(result["snapshotReused"])
