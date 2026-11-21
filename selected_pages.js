@@ -1069,11 +1069,14 @@
     status.textContent = message;
     status.dataset.state = state;
   };
-  byId("tracking-config-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    if (!form.reportValidity()) return;
+  const runTrackingMarkets = async ({ saveConfig, triggerButton }) => {
+    const form = byId("tracking-config-form");
+    const startButton = form.querySelector('button[type="submit"]');
+    const resumeButton = byId("tracking-resume-selected");
+    if (!form.reportValidity() || startButton.disabled || resumeButton.disabled) return;
+
     const entity = byId("tracking-entity").selectedOptions[0];
+    const entityUri = byId("tracking-entity").value;
     const chartType = byId("tracking-chart").value;
     const countrySelect = byId("tracking-country");
     const selectedCountry = countrySelect.value;
@@ -1081,135 +1084,96 @@
       ? Array.from(countrySelect.options).filter((option) => option.value && option.value !== "ALL")
       : [countrySelect.selectedOptions[0]];
     const startDate = byId("tracking-start-date").value;
-    const submitButton = form.querySelector('button[type="submit"]');
-    if (!entity?.value || !startDate || !markets.length || submitButton.disabled) return;
-    submitButton.disabled = true;
-    submitButton.textContent = "Starting tracker…";
+    if (!entityUri || !startDate || !markets.length) return;
+
+    startButton.disabled = true;
+    resumeButton.disabled = true;
+    triggerButton.textContent = saveConfig ? "Starting tracker…" : "Resuming…";
+    const failures = [];
     let completedMarkets = 0;
-    setTrackingRunStatus(`Running · Preparing ${markets.length.toLocaleString()} ${markets.length === 1 ? "market" : "markets"} for ${entity.textContent}.`, "running");
+    let pausedForRateLimit = false;
     try {
-      for (const [index, marketOption] of markets.entries()) {
-        const country = marketOption.value;
-        const marketName = marketOption.textContent;
-        setTrackingRunStatus(`Running · Fetching the latest chart for ${marketName} (${index + 1} of ${markets.length}).`, "running");
-        const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
-        const chart = await requestJson(`/api/charts?${chartParams}`);
-        const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
-        if (!targetDate) throw new Error(`Spotify did not return a chart date for ${marketName}. Completed ${completedMarkets} of ${markets.length} markets.`);
-        if (startDate > targetDate) throw new Error(`The start date is after the latest chart date in ${marketName} (${targetDate}). Completed ${completedMarkets} of ${markets.length} markets.`);
+      if (saveConfig) {
+        setTrackingRunStatus(`Saving tracker configuration for ${markets.length.toLocaleString()} markets before fetching charts.`, "running");
         await requestJson("/api/tracking/configs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            entity_uri: entity.value,
+            entity_uri: entityUri,
             chart_type: chartType,
-            country_code: country,
+            country_code: selectedCountry,
             enabled: true,
             backfill_start_date: startDate,
           }),
         });
-        const backfillRequest = {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chart_type: chartType,
-            country,
-            start_date: startDate,
-            target_date: targetDate,
-            entity_uris: [entity.value],
-            target_entity_uris: [entity.value],
-          }),
-        };
-        let progress;
-        do {
-          progress = await requestJson("/api/chart-history/backfill", backfillRequest);
-          const processed = Number(progress.processedDates || 0);
-          const total = Number(progress.totalDates || 0);
-          setTrackingRunStatus(
-            `Running · ${marketName} (${index + 1} of ${markets.length} markets) · Backfilled ${processed} of ${total} chart dates${progress.complete ? "." : "…"}`,
-            "running",
-          );
-          if (progress.error) {
-            throw new Error(`Backfill paused in ${marketName} after a fetch error. Saved progress is safe to resume.`);
-          }
-          if (!progress.complete) await new Promise((resolve) => window.setTimeout(resolve, 2000));
-        } while (!progress.complete);
-        completedMarkets += 1;
-        setTrackingRunStatus(`Running · ${completedMarkets} of ${markets.length} markets complete.`, "running");
       }
-      setTrackingRunStatus(`Done · Tracker active in ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market" : "markets"}. Historical backfill is complete.`, "done");
-      setStatus("collection-status", `Tracker is on for ${entity.textContent} in ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market" : "markets"}. Historical backfill is complete.`);
+
+      for (const [index, marketOption] of markets.entries()) {
+        const country = marketOption.value;
+        const marketName = marketOption.textContent;
+        setTrackingRunStatus(`Running · Fetching ${marketName} (${index + 1} of ${markets.length} markets).`, "running");
+        try {
+          const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
+          const chart = await requestJson(`/api/charts?${chartParams}`);
+          const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
+          if (!targetDate) throw new Error("Spotify did not return a latest chart date.");
+          if (startDate > targetDate) throw new Error(`Start date is after the latest chart date (${targetDate}).`);
+
+          let progress;
+          do {
+            progress = await requestJson("/api/chart-history/backfill", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                chart_type: chartType,
+                country,
+                start_date: startDate,
+                target_date: targetDate,
+                entity_uris: [entityUri],
+                target_entity_uris: [entityUri],
+              }),
+            });
+            setTrackingRunStatus(
+              `Running · ${marketName} (${index + 1} of ${markets.length}) · ${Number(progress.processedDates || 0).toLocaleString()} of ${Number(progress.totalDates || 0).toLocaleString()} chart dates.`,
+              "running",
+            );
+            if (progress.error) throw new Error(`Backfill paused: ${progress.error}. Saved progress can be resumed.`);
+            if (!progress.complete) await new Promise((resolve) => window.setTimeout(resolve, 2000));
+          } while (!progress.complete);
+          completedMarkets += 1;
+        } catch (error) {
+          failures.push({ marketName, message: error.message });
+          pausedForRateLimit = /rate.?limit|reconnect spotify/i.test(error.message);
+          setTrackingRunStatus(
+            `Issue in ${marketName} (${index + 1} of ${markets.length}): ${error.message}${pausedForRateLimit ? " Remaining markets are saved and can be resumed." : " Continuing with the next market."}`,
+            "error",
+          );
+          if (pausedForRateLimit) break;
+        }
+      }
+
+      const summary = failures.length
+        ? `${completedMarkets} of ${markets.length} markets complete; ${failures.length} need another attempt${pausedForRateLimit ? ". Rate limit reached; resume after it clears." : `: ${failures.slice(0, 4).map((item) => item.marketName).join(", ")}${failures.length > 4 ? `, and ${failures.length - 4} more` : ""}.`} Use Resume selected to retry.`
+        : `All ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market is" : "markets are"} active and backfilled.`;
+      setTrackingRunStatus(`${failures.length ? "Finished with issues" : "Done"} · ${summary}`, failures.length ? "error" : "done");
+      setStatus("collection-status", `Tracker for ${entity.textContent}: ${summary}`, failures.length > 0);
       await loadHistoryManagement();
     } catch (error) {
       setTrackingRunStatus(`Stopped · ${error.message}`, "error");
       setStatus("collection-status", error.message, true);
       await loadHistoryManagement();
     } finally {
-      submitButton.disabled = false;
-      submitButton.textContent = "Start tracker";
-    }
-  });
-  byId("tracking-resume-selected").addEventListener("click", async () => {
-    const form = byId("tracking-config-form");
-    const resumeButton = byId("tracking-resume-selected");
-    const startButton = form.querySelector('button[type="submit"]');
-    if (!form.reportValidity() || resumeButton.disabled || startButton.disabled) return;
-
-    const entity = byId("tracking-entity").selectedOptions[0];
-    const entityUri = byId("tracking-entity").value;
-    const chartType = byId("tracking-chart").value;
-    const country = byId("tracking-country").value;
-    const startDate = byId("tracking-start-date").value;
-    if (country === "ALL") {
-      setTrackingRunStatus("Choose one market to resume only that selection; this will not run all markets.", "error");
-      return;
-    }
-    if (!entityUri || !country || !startDate) return;
-
-    resumeButton.disabled = true;
-    startButton.disabled = true;
-    resumeButton.textContent = "Resuming…";
-    setTrackingRunStatus(`Resuming · ${entity.textContent} · ${chartType.replaceAll("_", " ")} · ${country}.`, "running");
-    try {
-      const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
-      const chart = await requestJson(`/api/charts?${chartParams}`);
-      const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
-      if (!targetDate) throw new Error("Spotify did not return a chart date for this selection.");
-      if (startDate > targetDate) throw new Error(`The start date is after the latest chart date (${targetDate}).`);
-
-      let progress;
-      do {
-        progress = await requestJson("/api/chart-history/backfill", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chart_type: chartType,
-            country,
-            start_date: startDate,
-            target_date: targetDate,
-            entity_uris: [entityUri],
-            target_entity_uris: [entityUri],
-          }),
-        });
-        setTrackingRunStatus(
-          `Resuming · ${entity.textContent} · ${country} · ${Number(progress.processedDates || 0).toLocaleString()} of ${Number(progress.totalDates || 0).toLocaleString()} chart dates${progress.complete ? "." : "…"}`,
-          progress.error ? "error" : "running",
-        );
-        if (progress.error) throw new Error(`Backfill paused after a fetch error. Saved progress is safe to resume.`);
-        if (!progress.complete) await new Promise((resolve) => window.setTimeout(resolve, 2000));
-      } while (!progress.complete);
-
-      setTrackingRunStatus(`Done · Backfill complete for ${entity.textContent} in ${country}.`, "done");
-      await loadHistoryManagement();
-    } catch (error) {
-      setTrackingRunStatus(`Stopped · ${error.message}`, "error");
-      setStatus("collection-status", error.message, true);
-      await loadHistoryManagement();
-    } finally {
-      resumeButton.disabled = false;
       startButton.disabled = false;
-      resumeButton.textContent = "Resume selected";
+      resumeButton.disabled = false;
+      triggerButton.textContent = saveConfig ? "Start tracker" : "Resume selected";
     }
+  };
+  byId("tracking-config-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runTrackingMarkets({ saveConfig: true, triggerButton: event.currentTarget.querySelector('button[type="submit"]') });
+  });
+  byId("tracking-resume-selected").addEventListener("click", () => {
+    void runTrackingMarkets({ saveConfig: false, triggerButton: byId("tracking-resume-selected") });
   });
   byId("tracking-config-list").addEventListener("click", async (event) => {
     const backfillButton = event.target.closest("[data-backfill-config]");
