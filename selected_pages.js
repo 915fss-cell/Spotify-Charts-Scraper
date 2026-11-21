@@ -1149,6 +1149,68 @@
       submitButton.textContent = "Start tracker";
     }
   });
+  byId("tracking-resume-selected").addEventListener("click", async () => {
+    const form = byId("tracking-config-form");
+    const resumeButton = byId("tracking-resume-selected");
+    const startButton = form.querySelector('button[type="submit"]');
+    if (!form.reportValidity() || resumeButton.disabled || startButton.disabled) return;
+
+    const entity = byId("tracking-entity").selectedOptions[0];
+    const entityUri = byId("tracking-entity").value;
+    const chartType = byId("tracking-chart").value;
+    const country = byId("tracking-country").value;
+    const startDate = byId("tracking-start-date").value;
+    if (country === "ALL") {
+      setTrackingRunStatus("Choose one market to resume only that selection; this will not run all markets.", "error");
+      return;
+    }
+    if (!entityUri || !country || !startDate) return;
+
+    resumeButton.disabled = true;
+    startButton.disabled = true;
+    resumeButton.textContent = "Resuming…";
+    setTrackingRunStatus(`Resuming · ${entity.textContent} · ${chartType.replaceAll("_", " ")} · ${country}.`, "running");
+    try {
+      const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
+      const chart = await requestJson(`/api/charts?${chartParams}`);
+      const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
+      if (!targetDate) throw new Error("Spotify did not return a chart date for this selection.");
+      if (startDate > targetDate) throw new Error(`The start date is after the latest chart date (${targetDate}).`);
+
+      let progress;
+      do {
+        progress = await requestJson("/api/chart-history/backfill", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chart_type: chartType,
+            country,
+            start_date: startDate,
+            target_date: targetDate,
+            entity_uris: [entityUri],
+            target_entity_uris: [entityUri],
+          }),
+        });
+        setTrackingRunStatus(
+          `Resuming · ${entity.textContent} · ${country} · ${Number(progress.processedDates || 0).toLocaleString()} of ${Number(progress.totalDates || 0).toLocaleString()} chart dates${progress.complete ? "." : "…"}`,
+          progress.error ? "error" : "running",
+        );
+        if (progress.error) throw new Error(`Backfill paused after a fetch error. Saved progress is safe to resume.`);
+        if (!progress.complete) await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      } while (!progress.complete);
+
+      setTrackingRunStatus(`Done · Backfill complete for ${entity.textContent} in ${country}.`, "done");
+      await loadHistoryManagement();
+    } catch (error) {
+      setTrackingRunStatus(`Stopped · ${error.message}`, "error");
+      setStatus("collection-status", error.message, true);
+      await loadHistoryManagement();
+    } finally {
+      resumeButton.disabled = false;
+      startButton.disabled = false;
+      resumeButton.textContent = "Resume selected";
+    }
+  });
   byId("tracking-config-list").addEventListener("click", async (event) => {
     const backfillButton = event.target.closest("[data-backfill-config]");
     const toggleButton = event.target.closest("[data-toggle-config]");
