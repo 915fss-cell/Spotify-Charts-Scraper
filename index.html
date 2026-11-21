@@ -127,9 +127,9 @@
           <div class="chart-head"><span class="chart-title" id="history-overview-title">Collection overview</span></div>
           <div class="history-overview-grid" id="history-overview-grid" aria-live="polite"></div>
           <form class="filters history-tracking-form" id="tracking-config-form">
-            <div class="field"><label for="tracking-entity">Tracked entity</label><select id="tracking-entity" required></select></div>
+            <div class="field"><label for="tracking-entity">Tracked entity</label><select id="tracking-entity" required disabled><option value="">Loading tracked entities…</option></select></div>
             <div class="field"><label for="tracking-chart">Chart</label><select id="tracking-chart" required><option value="daily_top_songs">Daily top songs</option><option value="weekly_top_songs">Weekly top songs</option><option value="daily_top_artists">Daily top artists</option><option value="weekly_top_artists">Weekly top artists</option></select></div>
-            <div class="field"><label for="tracking-country">Market</label><select id="tracking-country" required></select></div>
+            <div class="field"><label for="tracking-country">Market</label><select id="tracking-country" required disabled><option value="">Loading markets…</option></select></div>
             <div class="field"><label for="tracking-start-date">Backfill from</label><input id="tracking-start-date" type="date" required /></div>
             <div class="history-tracking-actions"><button class="load-button" type="submit">Start tracker</button><button class="quiet-button" id="tracking-resume-selected" type="button">Resume selected</button></div>
           </form>

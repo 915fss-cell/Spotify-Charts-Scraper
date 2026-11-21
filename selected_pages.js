@@ -517,13 +517,54 @@
     await loadHistoryCalendarDateResults(context, context.chartType);
   }
 
+  async function loadTrackingSelectionOptions() {
+    const [selectionsResult, countriesResult] = await Promise.allSettled([
+      requestJson("/api/selections"),
+      requestJson("/api/countries"),
+    ]);
+    const selections = selectionsResult.status === "fulfilled" && Array.isArray(selectionsResult.value)
+      ? selectionsResult.value
+      : [];
+    const countries = countriesResult.status === "fulfilled" && Array.isArray(countriesResult.value)
+      ? countriesResult.value
+      : [];
+    const entitySelect = byId("tracking-entity");
+    entitySelect.innerHTML = selections.length
+      ? selections.map((entity) => `<option value="${escapeHtml(entity.entityUri)}" data-type="${escapeHtml(entity.entityType)}">${escapeHtml(entity.entityName)} · ${escapeHtml(entity.entityType)}</option>`).join("")
+      : `<option value="">${selectionsResult.status === "fulfilled" ? "Save an entity first" : "Unable to load entities"}</option>`;
+    entitySelect.disabled = selectionsResult.status !== "fulfilled" || selections.length === 0;
+    byId("tracking-country").innerHTML = countriesResult.status === "fulfilled"
+      ? '<option value="" selected disabled>Choose a market</option><option value="ALL">All supported regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("")
+      : '<option value="" selected disabled>Unable to load markets</option>';
+    byId("tracking-country").disabled = countriesResult.status !== "fulfilled";
+    if (countriesResult.status === "fulfilled") {
+      byId("collection-job-country").innerHTML = '<option value="">All markets</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+      byId("history-detail-country").innerHTML = '<option value="">All regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+    }
+    byId("history-detail-chart").innerHTML = '<option value="">Choose a chart</option>' + [
+      ["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"],
+      ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"],
+      ["weekly_top_albums", "Weekly top albums"],
+    ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+    const setChartOptions = () => {
+      const selected = entitySelect.selectedOptions[0];
+      const type = selected?.dataset.type;
+      const options = type === "artist"
+        ? [["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"], ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"], ["weekly_top_albums", "Weekly top albums"]]
+        : [["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"]];
+      byId("tracking-chart").innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+    };
+    entitySelect.onchange = setChartOptions;
+    setChartOptions();
+    return { selections, countries };
+  }
+
   async function loadHistoryManagement() {
+    await loadTrackingSelectionOptions();
     try {
-      const [overview, configs, selections, countries, runs, backfillQueue] = await Promise.all([
+      const [overview, configs, runs, backfillQueue] = await Promise.all([
         requestJson("/api/history/overview"),
         requestJson("/api/tracking/configs"),
-        requestJson("/api/selections"),
-        requestJson("/api/countries"),
         requestJson(`/api/collection/runs?limit=8&offset=${collectionRunsOffset}`),
         requestJson("/api/chart-history/backfill/queue"),
       ]);
@@ -538,28 +579,6 @@
         [overview.snapshot_rows, "Saved appearances"],
         [overview.retry_jobs, "Dates needing retry"],
       ].map(([value, label]) => `<div class="history-stat"><strong>${Number(value || 0).toLocaleString()}</strong><span>${escapeHtml(label)}</span></div>`).join("");
-      const entitySelect = byId("tracking-entity");
-      entitySelect.innerHTML = selections.length
-        ? selections.map((entity) => `<option value="${escapeHtml(entity.entityUri)}" data-type="${escapeHtml(entity.entityType)}">${escapeHtml(entity.entityName)} · ${escapeHtml(entity.entityType)}</option>`).join("")
-        : '<option value="">Save an entity first</option>';
-      byId("tracking-country").innerHTML = '<option value="" selected disabled>Choose a market</option><option value="ALL">All supported regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
-      byId("collection-job-country").innerHTML = '<option value="">All markets</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
-      byId("history-detail-country").innerHTML = '<option value="">All regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
-      byId("history-detail-chart").innerHTML = '<option value="">Choose a chart</option>' + [
-        ["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"],
-        ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"],
-        ["weekly_top_albums", "Weekly top albums"],
-      ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
-      const setChartOptions = () => {
-        const selected = entitySelect.selectedOptions[0];
-        const type = selected?.dataset.type;
-        const options = type === "artist"
-          ? [["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"], ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"], ["weekly_top_albums", "Weekly top albums"]]
-          : [["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"]];
-        byId("tracking-chart").innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
-      };
-      entitySelect.onchange = setChartOptions;
-      setChartOptions();
       byId("tracking-config-count").textContent = `${configs.length.toLocaleString()} configurations`;
       byId("tracking-config-list").innerHTML = configs.length ? configs.map((config) => `
         <div class="history-config-row">
