@@ -3,8 +3,9 @@
   if (!app) return;
 
   const { byId, requestJson, escapeHtml, spotifyLink } = app;
-  const state = { cadence: "daily", entityType: "track", chartType: "daily_top_songs", view: "release", marketScope: "global" };
+  const state = { cadence: "daily", entityType: "track", chartType: "daily_top_songs", view: "release", marketScope: "all" };
   let activePage = "charts";
+  let livePollTimer = null;
   let liveOverview = null;
   let liveKey = "";
   let liveLoadedAt = 0;
@@ -45,16 +46,6 @@
   }
 
   function updateLiveActionLabel() {
-    const savedForToday = state.marketScope === "all"
-      && liveOverview?.marketScope === "all"
-      && liveOverview.cadence === state.cadence
-      && liveOverview.entityType === state.entityType
-      && liveOverview.chartType === state.chartType
-      && (liveOverview.snapshotSaved || liveOverview.snapshotReused);
-    byId("live-refresh").textContent = savedForToday
-      ? "Today’s regions saved"
-      : state.marketScope === "global" ? "Load all regions" : "Refresh all regions";
-    byId("live-refresh").disabled = Boolean(savedForToday);
     const retryButton = byId("live-retry-failed");
     retryButton.hidden = !(state.marketScope === "all" && liveOverview?.failedRegions?.length);
   }
@@ -196,15 +187,15 @@
       byId("live-results").append(diagnostics);
     }
     const savedChartMarkets = Number(payload.savedChartMarkets || 0);
-    const marketMessage = payload.snapshotReused
-      ? `Today’s saved results loaded from History (${payload.marketsScanned} of ${payload.marketsTotal} markets).`
-      : savedChartMarkets === payload.marketsTotal && savedChartMarkets > 0
-        ? `Today’s saved chart data reused for all ${savedChartMarkets} markets.`
-        : savedChartMarkets > 0
-          ? `Today’s saved chart data reused for ${savedChartMarkets} of ${payload.marketsTotal} markets; the rest were loaded from Spotify.`
-          : payload.marketScope === "global"
-            ? "Global chart loaded. Scan all regions to find more placements."
-            : `${payload.marketsScanned} of ${payload.marketsTotal} markets scanned.`;
+    const marketMessage = payload.scanInProgress
+      ? `${payload.marketsScanned} of ${payload.marketsTotal} markets loaded; more results will appear as markets finish.`
+      : payload.snapshotReused
+        ? `Today’s saved results loaded from History (${payload.marketsScanned} of ${payload.marketsTotal} markets).`
+        : savedChartMarkets === payload.marketsTotal && savedChartMarkets > 0
+          ? `Today’s saved chart data reused for all ${savedChartMarkets} markets.`
+          : savedChartMarkets > 0
+            ? `Today’s saved chart data reused for ${savedChartMarkets} of ${payload.marketsTotal} markets.`
+            : `${payload.marketsScanned} of ${payload.marketsTotal} markets loaded.`;
     const regionLabel = payload.matchingRegions === 1 ? "region" : "regions";
     const message = `${payload.artist.entityName}: ${payload.matchingRegions} ${regionLabel} charting ${entityTypeName()} in ${chartTypeName()}. ${marketMessage}${payload.metadataLimitation ? ` ${payload.metadataLimitation}` : ""}`;
     const storageMessage = payload.historyStorageAvailable == null
@@ -221,22 +212,9 @@
 
   async function fetchAllRegionsOverview(cadence, entityType, chartType, refresh = false, retryFailed = false) {
     const params = new URLSearchParams({ cadence, entity_type: entityType, chart_type: chartType, scope: "all" });
+    if (refresh) params.set("refresh", "true");
     if (retryFailed) params.set("retry_failed", "true");
-    let refreshScan = refresh && !retryFailed;
-    while (true) {
-      if (refreshScan) params.set("refresh", "true");
-      const payload = await requestJson(`/api/focused/live?${params}`);
-      params.delete("refresh");
-      refreshScan = false;
-      if (payload.scanError) {
-        if (payload.marketDiagnostics?.length) return payload;
-        throw new Error(payload.scanError);
-      }
-      if (!payload.scanInProgress) return payload;
-      if (state.cadence !== cadence || state.entityType !== entityType || state.chartType !== chartType) throw new Error("The chart selection changed while regions were loading.");
-      setStatus("live-status", "Global chart is loaded. The regional scan is running in the background and will update automatically.");
-      await new Promise((resolve) => window.setTimeout(resolve, 3000));
-    }
+    return requestJson(`/api/focused/live?${params}`);
   }
 
   async function fetchLiveOverview(refresh = false) {
@@ -250,64 +228,57 @@
     return requestJson(`/api/focused/live?${params}`);
   }
 
+  function scheduleLiveScanPoll() {
+    if (livePollTimer) window.clearTimeout(livePollTimer);
+    livePollTimer = null;
+    if (activePage !== "live" || !liveOverview?.scanInProgress) return;
+    livePollTimer = window.setTimeout(() => {
+      if (activePage === "live") void loadFocusedLive();
+    }, 2500);
+  }
+
   async function loadFocusedLive(refresh = false, retryFailed = false) {
+    if (livePollTimer) window.clearTimeout(livePollTimer);
+    livePollTimer = null;
     const requestId = ++liveRequest;
-    const showingGlobalWhileScanning = state.marketScope === "all"
-      && liveOverview?.marketScope === "global"
-      && liveOverview.chartType === state.chartType
+    const hasMatchingResults = liveOverview?.chartType === state.chartType
       && liveOverview.cadence === state.cadence
       && liveOverview.entityType === state.entityType;
-    const preservingLoadedRegions = retryFailed
-      && liveOverview?.marketScope === "all"
-      && liveOverview.chartType === state.chartType
-      && liveOverview.cadence === state.cadence
-      && liveOverview.entityType === state.entityType;
-    byId("live-refresh").disabled = true;
-    byId("live-refresh").textContent = state.marketScope === "global" ? "Loading Global…" : "Loading regions…";
-    if (!showingGlobalWhileScanning && !preservingLoadedRegions) {
-      byId("live-results-count").textContent = state.marketScope === "global" ? "Loading Global chart…" : "Scanning all Spotify regions…";
-      byId("live-results").innerHTML = '<p class="focus-empty">Loading chart…</p>';
+    const preservingLoadedRegions = retryFailed && hasMatchingResults;
+    if (!hasMatchingResults && !preservingLoadedRegions) {
+      byId("live-results-count").textContent = "Loading saved chart results…";
+      byId("live-results").innerHTML = '<p class="focus-empty">Loading saved markets…</p>';
     }
-    setStatus("live-status", state.marketScope === "global"
-      ? `Loading ${focusedSelectionName()} ${entityTypeName()} chart for Global…`
-      : preservingLoadedRegions
-        ? `Retrying ${liveOverview.failedRegions.length} failed regions. Previously loaded results remain visible.`
-        : showingGlobalWhileScanning
-          ? "Global results remain visible while all regions are scanned…"
-          : `Loading ${focusedSelectionName()} ${entityTypeName()} charts across all regions…`);
+    setStatus("live-status", preservingLoadedRegions
+      ? `Retrying ${liveOverview.failedRegions.length} failed markets. Saved results remain visible.`
+      : hasMatchingResults
+        ? "Showing saved results while any remaining markets load…"
+        : `Loading saved ${focusedSelectionName()} charts across Global and all regions…`);
     try {
-      const payload = state.marketScope === "all"
-        ? await fetchAllRegionsOverview(state.cadence, state.entityType, state.chartType, refresh, retryFailed)
-        : await fetchLiveOverview(refresh);
+      const payload = await fetchAllRegionsOverview(
+        state.cadence, state.entityType, state.chartType, refresh, retryFailed
+      );
       if (requestId === liveRequest && activePage === "live") {
         liveOverview = payload;
         liveKey = currentKey();
         liveLoadedAt = Date.now();
         renderLive(payload);
+        scheduleLiveScanPoll();
       }
     } catch (error) {
       if (requestId === liveRequest) {
-        if (state.marketScope === "all" && liveOverview?.marketScope === "global") {
-          state.marketScope = "global";
+        if (hasMatchingResults) {
           renderLive(liveOverview);
-          setStatus("live-status", `The full regional scan failed: ${error.message} The Global chart is still shown.`, true);
+          setStatus("live-status", `Could not refresh market progress: ${error.message} Previously saved results remain visible.`, true);
+          scheduleLiveScanPoll();
         } else {
-          const globalChartUnavailable = error.marketDiagnostics?.some(
-            (item) => item.countryCode === "GLOBAL" && item.httpStatus === 404,
-          );
-          const message = globalChartUnavailable
-            ? `${chartTypeName()} is not available as a Global chart. Choose “Load all regions” to check country charts.`
-            : error.message;
           byId("live-results-count").textContent = "Charts unavailable";
-          byId("live-results").innerHTML = `<p class="focus-empty">${escapeHtml(message)}</p>`;
-          setStatus("live-status", message, true);
+          byId("live-results").innerHTML = `<p class="focus-empty">${escapeHtml(error.message)}</p>`;
+          setStatus("live-status", error.message, true);
         }
       }
     } finally {
-      if (requestId === liveRequest) {
-        byId("live-refresh").disabled = false;
-        updateLiveActionLabel();
-      }
+      if (requestId === liveRequest) updateLiveActionLabel();
     }
   }
 
@@ -546,13 +517,54 @@
     await loadHistoryCalendarDateResults(context, context.chartType);
   }
 
+  async function loadTrackingSelectionOptions() {
+    const [selectionsResult, countriesResult] = await Promise.allSettled([
+      requestJson("/api/selections"),
+      requestJson("/api/countries"),
+    ]);
+    const selections = selectionsResult.status === "fulfilled" && Array.isArray(selectionsResult.value)
+      ? selectionsResult.value
+      : [];
+    const countries = countriesResult.status === "fulfilled" && Array.isArray(countriesResult.value)
+      ? countriesResult.value
+      : [];
+    const entitySelect = byId("tracking-entity");
+    entitySelect.innerHTML = selections.length
+      ? selections.map((entity) => `<option value="${escapeHtml(entity.entityUri)}" data-type="${escapeHtml(entity.entityType)}">${escapeHtml(entity.entityName)} · ${escapeHtml(entity.entityType)}</option>`).join("")
+      : `<option value="">${selectionsResult.status === "fulfilled" ? "Save an entity first" : "Unable to load entities"}</option>`;
+    entitySelect.disabled = selectionsResult.status !== "fulfilled" || selections.length === 0;
+    byId("tracking-country").innerHTML = countriesResult.status === "fulfilled"
+      ? '<option value="" selected disabled>Choose a market</option><option value="ALL">All supported regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("")
+      : '<option value="" selected disabled>Unable to load markets</option>';
+    byId("tracking-country").disabled = countriesResult.status !== "fulfilled";
+    if (countriesResult.status === "fulfilled") {
+      byId("collection-job-country").innerHTML = '<option value="">All markets</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+      byId("history-detail-country").innerHTML = '<option value="">All regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
+    }
+    byId("history-detail-chart").innerHTML = '<option value="">Choose a chart</option>' + [
+      ["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"],
+      ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"],
+      ["weekly_top_albums", "Weekly top albums"],
+    ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+    const setChartOptions = () => {
+      const selected = entitySelect.selectedOptions[0];
+      const type = selected?.dataset.type;
+      const options = type === "artist"
+        ? [["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"], ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"], ["weekly_top_albums", "Weekly top albums"]]
+        : [["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"]];
+      byId("tracking-chart").innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+    };
+    entitySelect.onchange = setChartOptions;
+    setChartOptions();
+    return { selections, countries };
+  }
+
   async function loadHistoryManagement() {
+    await loadTrackingSelectionOptions();
     try {
-      const [overview, configs, selections, countries, runs, backfillQueue] = await Promise.all([
+      const [overview, configs, runs, backfillQueue] = await Promise.all([
         requestJson("/api/history/overview"),
         requestJson("/api/tracking/configs"),
-        requestJson("/api/selections"),
-        requestJson("/api/countries"),
         requestJson(`/api/collection/runs?limit=8&offset=${collectionRunsOffset}`),
         requestJson("/api/chart-history/backfill/queue"),
       ]);
@@ -567,28 +579,6 @@
         [overview.snapshot_rows, "Saved appearances"],
         [overview.retry_jobs, "Dates needing retry"],
       ].map(([value, label]) => `<div class="history-stat"><strong>${Number(value || 0).toLocaleString()}</strong><span>${escapeHtml(label)}</span></div>`).join("");
-      const entitySelect = byId("tracking-entity");
-      entitySelect.innerHTML = selections.length
-        ? selections.map((entity) => `<option value="${escapeHtml(entity.entityUri)}" data-type="${escapeHtml(entity.entityType)}">${escapeHtml(entity.entityName)} · ${escapeHtml(entity.entityType)}</option>`).join("")
-        : '<option value="">Save an entity first</option>';
-      byId("tracking-country").innerHTML = '<option value="" selected disabled>Choose a market</option><option value="ALL">All supported regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
-      byId("collection-job-country").innerHTML = '<option value="">All markets</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
-      byId("history-detail-country").innerHTML = '<option value="">All regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
-      byId("history-detail-chart").innerHTML = '<option value="">Choose a chart</option>' + [
-        ["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"],
-        ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"],
-        ["weekly_top_albums", "Weekly top albums"],
-      ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
-      const setChartOptions = () => {
-        const selected = entitySelect.selectedOptions[0];
-        const type = selected?.dataset.type;
-        const options = type === "artist"
-          ? [["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"], ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"], ["weekly_top_albums", "Weekly top albums"]]
-          : [["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"]];
-        byId("tracking-chart").innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
-      };
-      entitySelect.onchange = setChartOptions;
-      setChartOptions();
       byId("tracking-config-count").textContent = `${configs.length.toLocaleString()} configurations`;
       byId("tracking-config-list").innerHTML = configs.length ? configs.map((config) => `
         <div class="history-config-row">
@@ -798,6 +788,8 @@
   }
 
   function activatePage(page) {
+    if (livePollTimer) window.clearTimeout(livePollTimer);
+    livePollTimer = null;
     const liveRoutes = {
       "live-daily-songs": { cadence: "daily", entityType: "track", title: "Daily top songs", type: "songs", chartType: "daily_top_songs" },
       "live-daily-viral-songs": { cadence: "daily", entityType: "track", title: "Daily viral songs", type: "songs", chartType: "daily_viral_songs" },
@@ -816,10 +808,10 @@
       state.entityType = route.entityType;
       state.chartType = route.chartType;
       state.view = "release";
-      state.marketScope = "global";
+      state.marketScope = "all";
       byId("live-title-label").textContent = route.title;
       byId("live-eyebrow").textContent = `${route.title} chart`;
-      byId("live-description").textContent = `Explore your tracked entities on the Global ${route.title.toLowerCase()} chart.`;
+      byId("live-description").textContent = `Explore your tracked entities across Global and all available regions for the ${route.title.toLowerCase()} chart.`;
       byId("live-view-control").hidden = route.entityType === "artist";
       byId("history-title-label").textContent = isChartHistory ? `${route.title} history` : "History";
       byId("history-eyebrow").textContent = isChartHistory ? `${route.title} history` : "Tracked chart history";
@@ -833,7 +825,7 @@
       state.entityType = "track";
       state.chartType = "daily_top_songs";
       state.view = "release";
-      state.marketScope = "global";
+      state.marketScope = "all";
       byId("history-title-label").textContent = "History";
       byId("history-eyebrow").textContent = "Tracked chart history";
       byId("history-description").textContent = "Review saved appearances and tracked entities across Spotify charts.";
@@ -884,17 +876,13 @@
       if (key === "view") {
         if (activePage === "live" && liveOverview) renderLive(liveOverview);
       } else if (activePage === "live") {
-        state.marketScope = "global";
+        state.marketScope = "all";
         updateLiveActionLabel();
         loadFocusedLive();
       }
     });
   });
 
-    byId("live-refresh").addEventListener("click", () => {
-      state.marketScope = "all";
-      loadFocusedLive(true);
-    });
     byId("live-retry-failed").addEventListener("click", () => {
       state.marketScope = "all";
       byId("live-retry-failed").disabled = true;
@@ -1100,11 +1088,14 @@
     status.textContent = message;
     status.dataset.state = state;
   };
-  byId("tracking-config-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    if (!form.reportValidity()) return;
+  const runTrackingMarkets = async ({ saveConfig, triggerButton }) => {
+    const form = byId("tracking-config-form");
+    const startButton = form.querySelector('button[type="submit"]');
+    const resumeButton = byId("tracking-resume-selected");
+    if (!form.reportValidity() || startButton.disabled || resumeButton.disabled) return;
+
     const entity = byId("tracking-entity").selectedOptions[0];
+    const entityUri = byId("tracking-entity").value;
     const chartType = byId("tracking-chart").value;
     const countrySelect = byId("tracking-country");
     const selectedCountry = countrySelect.value;
@@ -1112,73 +1103,96 @@
       ? Array.from(countrySelect.options).filter((option) => option.value && option.value !== "ALL")
       : [countrySelect.selectedOptions[0]];
     const startDate = byId("tracking-start-date").value;
-    const submitButton = form.querySelector('button[type="submit"]');
-    if (!entity?.value || !startDate || !markets.length || submitButton.disabled) return;
-    submitButton.disabled = true;
-    submitButton.textContent = "Starting tracker…";
+    if (!entityUri || !startDate || !markets.length) return;
+
+    startButton.disabled = true;
+    resumeButton.disabled = true;
+    triggerButton.textContent = saveConfig ? "Starting tracker…" : "Resuming…";
+    const failures = [];
     let completedMarkets = 0;
-    setTrackingRunStatus(`Running · Preparing ${markets.length.toLocaleString()} ${markets.length === 1 ? "market" : "markets"} for ${entity.textContent}.`, "running");
+    let pausedForRateLimit = false;
     try {
-      for (const [index, marketOption] of markets.entries()) {
-        const country = marketOption.value;
-        const marketName = marketOption.textContent;
-        setTrackingRunStatus(`Running · Fetching the latest chart for ${marketName} (${index + 1} of ${markets.length}).`, "running");
-        const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
-        const chart = await requestJson(`/api/charts?${chartParams}`);
-        const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
-        if (!targetDate) throw new Error(`Spotify did not return a chart date for ${marketName}. Completed ${completedMarkets} of ${markets.length} markets.`);
-        if (startDate > targetDate) throw new Error(`The start date is after the latest chart date in ${marketName} (${targetDate}). Completed ${completedMarkets} of ${markets.length} markets.`);
+      if (saveConfig) {
+        setTrackingRunStatus(`Saving tracker configuration for ${markets.length.toLocaleString()} markets before fetching charts.`, "running");
         await requestJson("/api/tracking/configs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            entity_uri: entity.value,
+            entity_uri: entityUri,
             chart_type: chartType,
-            country_code: country,
+            country_code: selectedCountry,
             enabled: true,
             backfill_start_date: startDate,
           }),
         });
-        const backfillRequest = {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chart_type: chartType,
-            country,
-            start_date: startDate,
-            target_date: targetDate,
-            entity_uris: [entity.value],
-            target_entity_uris: [entity.value],
-          }),
-        };
-        let progress;
-        do {
-          progress = await requestJson("/api/chart-history/backfill", backfillRequest);
-          const processed = Number(progress.processedDates || 0);
-          const total = Number(progress.totalDates || 0);
-          setTrackingRunStatus(
-            `Running · ${marketName} (${index + 1} of ${markets.length} markets) · Backfilled ${processed} of ${total} chart dates${progress.complete ? "." : "…"}`,
-            "running",
-          );
-          if (progress.error) {
-            throw new Error(`Backfill paused in ${marketName} after a fetch error. Saved progress is safe to resume.`);
-          }
-          if (!progress.complete) await new Promise((resolve) => window.setTimeout(resolve, 2000));
-        } while (!progress.complete);
-        completedMarkets += 1;
-        setTrackingRunStatus(`Running · ${completedMarkets} of ${markets.length} markets complete.`, "running");
       }
-      setTrackingRunStatus(`Done · Tracker active in ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market" : "markets"}. Historical backfill is complete.`, "done");
-      setStatus("collection-status", `Tracker is on for ${entity.textContent} in ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market" : "markets"}. Historical backfill is complete.`);
+
+      for (const [index, marketOption] of markets.entries()) {
+        const country = marketOption.value;
+        const marketName = marketOption.textContent;
+        setTrackingRunStatus(`Running · Fetching ${marketName} (${index + 1} of ${markets.length} markets).`, "running");
+        try {
+          const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
+          const chart = await requestJson(`/api/charts?${chartParams}`);
+          const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
+          if (!targetDate) throw new Error("Spotify did not return a latest chart date.");
+          if (startDate > targetDate) throw new Error(`Start date is after the latest chart date (${targetDate}).`);
+
+          let progress;
+          do {
+            progress = await requestJson("/api/chart-history/backfill", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                chart_type: chartType,
+                country,
+                start_date: startDate,
+                target_date: targetDate,
+                entity_uris: [entityUri],
+                target_entity_uris: [entityUri],
+              }),
+            });
+            setTrackingRunStatus(
+              `Running · ${marketName} (${index + 1} of ${markets.length}) · ${Number(progress.processedDates || 0).toLocaleString()} of ${Number(progress.totalDates || 0).toLocaleString()} chart dates.`,
+              "running",
+            );
+            if (progress.error) throw new Error(`Backfill paused: ${progress.error}. Saved progress can be resumed.`);
+            if (!progress.complete) await new Promise((resolve) => window.setTimeout(resolve, 2000));
+          } while (!progress.complete);
+          completedMarkets += 1;
+        } catch (error) {
+          failures.push({ marketName, message: error.message });
+          pausedForRateLimit = /rate.?limit|reconnect spotify/i.test(error.message);
+          setTrackingRunStatus(
+            `Issue in ${marketName} (${index + 1} of ${markets.length}): ${error.message}${pausedForRateLimit ? " Remaining markets are saved and can be resumed." : " Continuing with the next market."}`,
+            "error",
+          );
+          if (pausedForRateLimit) break;
+        }
+      }
+
+      const summary = failures.length
+        ? `${completedMarkets} of ${markets.length} markets complete; ${failures.length} need another attempt${pausedForRateLimit ? ". Rate limit reached; resume after it clears." : `: ${failures.slice(0, 4).map((item) => item.marketName).join(", ")}${failures.length > 4 ? `, and ${failures.length - 4} more` : ""}.`} Use Resume selected to retry.`
+        : `All ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market is" : "markets are"} active and backfilled.`;
+      setTrackingRunStatus(`${failures.length ? "Finished with issues" : "Done"} · ${summary}`, failures.length ? "error" : "done");
+      setStatus("collection-status", `Tracker for ${entity.textContent}: ${summary}`, failures.length > 0);
       await loadHistoryManagement();
     } catch (error) {
       setTrackingRunStatus(`Stopped · ${error.message}`, "error");
       setStatus("collection-status", error.message, true);
       await loadHistoryManagement();
     } finally {
-      submitButton.disabled = false;
-      submitButton.textContent = "Start tracker";
+      startButton.disabled = false;
+      resumeButton.disabled = false;
+      triggerButton.textContent = saveConfig ? "Start tracker" : "Resume selected";
     }
+  };
+  byId("tracking-config-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runTrackingMarkets({ saveConfig: true, triggerButton: event.currentTarget.querySelector('button[type="submit"]') });
+  });
+  byId("tracking-resume-selected").addEventListener("click", () => {
+    void runTrackingMarkets({ saveConfig: false, triggerButton: byId("tracking-resume-selected") });
   });
   byId("tracking-config-list").addEventListener("click", async (event) => {
     const backfillButton = event.target.closest("[data-backfill-config]");
@@ -1312,8 +1326,8 @@
 
   authChannel?.addEventListener("message", (event) => {
     if (event.data === "connected") {
-      if (activePage === "live") loadFocusedLive(true);
-      if (activePage === "history") loadFocusedHistory(true);
+    if (activePage === "live") loadFocusedLive();
+    if (activePage === "history") loadFocusedHistory();
     }
   });
   window.addEventListener("hashchange", () => activatePage(location.hash.slice(1)));

@@ -200,11 +200,13 @@ class CollectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["requestedChartKeys"], 1)
         query = pool.fetch_queries[0]
         self.assertIn("unnest($5::text[])", query)
+        self.assertIn("j.fetched_at >= $6::timestamptz", query)
         self.assertIn("spotify_chart_selections", query)
         self.assertIn("is_archived = false", query)
         self.assertEqual(pool.fetch_arguments[0][0], ["daily_top_songs"])
         self.assertIn("GLOBAL", pool.fetch_arguments[0][4])
         self.assertIn("US", pool.fetch_arguments[0][4])
+        self.assertEqual(pool.fetch_arguments[0][5].hour, 13)
         saved_rows = pool.connection.executemany_calls[0][1]
         self.assertEqual(len(saved_rows), 1)
         self.assertEqual(saved_rows[0][3], selected_track_uri)
