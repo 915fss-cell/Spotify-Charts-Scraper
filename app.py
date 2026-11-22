@@ -767,12 +767,31 @@ async def save_chart_entry_to_history(request: ChartEntryHistoryInput) -> dict[s
 
         async with pool.acquire() as connection:
             async with connection.transaction():
+                matching_uris = await connection.fetch(
+                    """SELECT selection.entity_uri
+                       FROM public.spotify_chart_selections selection
+                       WHERE selection.entity_type = 'track'
+                         AND selection.is_archived = false
+                         AND lower(trim(selection.entity_name)) = lower(trim($1))
+                         AND lower(trim(selection.artist_names)) = lower(trim($2))
+                         AND EXISTS (
+                           SELECT 1 FROM public.spotify_chart_tracking_configs config
+                           WHERE config.entity_uri = selection.entity_uri AND config.enabled = true
+                         )
+                       ORDER BY selection.entity_uri
+                       LIMIT 2""",
+                    entity_name, artist_names,
+                )
+                canonical_uri = request.track_uri
+                if len(matching_uris) == 1:
+                    canonical_uri = matching_uris[0]["entity_uri"]
+                    entry["trackMetadata"]["trackUri"] = canonical_uri
                 already_saved = await connection.fetchval(
                     """SELECT EXISTS (
                          SELECT 1 FROM public.spotify_chart_snapshots
                          WHERE chart_type = $1 AND country_code = $2 AND chart_date = $3 AND track_uri = $4
                        )""",
-                    request.chart_type, country_code, chart_date, request.track_uri,
+                    request.chart_type, country_code, chart_date, canonical_uri,
                 )
                 await connection.execute(
                     """INSERT INTO public.spotify_chart_selections
@@ -782,7 +801,7 @@ async def save_chart_entry_to_history(request: ChartEntryHistoryInput) -> dict[s
                          entity_type = EXCLUDED.entity_type, entity_name = EXCLUDED.entity_name,
                          artist_names = EXCLUDED.artist_names, image_url = EXCLUDED.image_url,
                          is_archived = false""",
-                    request.track_uri, entity_name, artist_names, image_url,
+                    canonical_uri, entity_name, artist_names, image_url,
                 )
                 saved_count = await save_chart_snapshot(
                     pool, request.chart_type, country_code, chart_date, [entry], connection=connection,
@@ -792,7 +811,7 @@ async def save_chart_entry_to_history(request: ChartEntryHistoryInput) -> dict[s
         return {
             "saved": True,
             "alreadySaved": bool(already_saved),
-            "trackUri": request.track_uri,
+            "trackUri": canonical_uri,
             "trackName": entity_name,
             "chartDate": chart_date.isoformat(),
             "countryCode": country_code,

@@ -51,12 +51,16 @@ class AsyncContextStub:
 class HistoryWriteConnection:
     def __init__(self):
         self.executed = []
+        self.matching_uris = []
 
     def transaction(self):
         return AsyncContextStub(self)
 
     async def fetchval(self, *_args):
         return False
+
+    async def fetch(self, *_args):
+        return self.matching_uris
 
     async def execute(self, query, *args):
         self.executed.append((query, args))
@@ -90,6 +94,7 @@ class HistoryDashboardTests(unittest.TestCase):
                 },
             }
             connection = HistoryWriteConnection()
+            connection.matching_uris = [{"entity_uri": "spotify:track:fedcba9876543210"}]
             pool = HistoryWritePool(connection, {
                 "payload": {"displayChart": {"date": "2026-11-14"}, "entries": [entry]},
                 "chart_date": date(2026, 11, 14),
@@ -109,8 +114,9 @@ class HistoryDashboardTests(unittest.TestCase):
             self.assertFalse(result["alreadySaved"])
             self.assertEqual(result["chartDate"], "2026-11-14")
             self.assertEqual(result["countryCode"], "US")
-            self.assertEqual(connection.executed[0][1][0], "spotify:track:0123456789abcdef")
+            self.assertEqual(connection.executed[0][1][0], "spotify:track:fedcba9876543210")
             self.assertEqual(save_snapshot.await_args.args[3], date(2026, 11, 14))
+            self.assertEqual(save_snapshot.await_args.args[4][0]["trackMetadata"]["trackUri"], "spotify:track:fedcba9876543210")
             self.assertEqual(save_snapshot.await_args.kwargs["connection"], connection)
 
         asyncio.run(run())
