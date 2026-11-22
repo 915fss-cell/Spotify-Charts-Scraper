@@ -681,7 +681,7 @@ async def run_durable_history_backfill_batch(
                 chart_type, country, requested, chart_day,
             )
             cached = await connection.fetchrow(
-                """SELECT payload FROM public.spotify_chart_payload_cache
+                """SELECT payload, chart_date FROM public.spotify_chart_payload_cache
                    WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3""",
                 chart_type, country, requested,
             )

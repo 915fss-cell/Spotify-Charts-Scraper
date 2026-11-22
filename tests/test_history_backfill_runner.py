@@ -1,7 +1,7 @@
 import asyncio
 import hashlib
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -217,5 +217,37 @@ class HistoryBackfillRunnerTests(unittest.TestCase):
 
             self.assertEqual(error.exception.status_code, 502)
             self.assertIn("paused", pool.execute.await_args.args[0])
+
+        asyncio.run(run())
+
+    def test_failed_backfill_request_releases_its_new_lease(self):
+        async def run():
+            now = datetime.now(timezone.utc)
+            pool = SimpleNamespace(
+                fetchrow=AsyncMock(return_value={"lease_expires_at": now + timedelta(minutes=2)}),
+                execute=AsyncMock(return_value="UPDATE 1"),
+            )
+            await app._release_failed_backfill_lease(
+                pool, "daily_top_songs", "UA", None, now
+            )
+
+            pool.execute.assert_awaited_once()
+            self.assertIn("status = 'pending'", pool.execute.await_args.args[0])
+
+        asyncio.run(run())
+
+    def test_failed_request_preserves_preexisting_lease(self):
+        async def run():
+            now = datetime.now(timezone.utc)
+            previous_lease = now + timedelta(minutes=2)
+            pool = SimpleNamespace(
+                fetchrow=AsyncMock(return_value={"lease_expires_at": previous_lease}),
+                execute=AsyncMock(),
+            )
+            await app._release_failed_backfill_lease(
+                pool, "daily_top_songs", "UA", previous_lease, now
+            )
+
+            pool.execute.assert_not_awaited()
 
         asyncio.run(run())

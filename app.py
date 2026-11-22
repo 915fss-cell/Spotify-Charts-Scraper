@@ -2872,6 +2872,36 @@ async def chart_history_backfill_progress(
     }
 
 
+async def _release_failed_backfill_lease(
+    pool: Any,
+    chart_type: str,
+    country: str,
+    previous_lease: datetime | None,
+    request_started_at: datetime,
+) -> None:
+    lease = await pool.fetchrow(
+        """SELECT lease_expires_at FROM public.spotify_chart_backfills
+           WHERE chart_type = $1 AND country_code = $2 AND status = 'running'""",
+        chart_type,
+        country,
+    )
+    if lease is None or lease["lease_expires_at"] is None or lease["lease_expires_at"] == previous_lease:
+        return
+    if lease["lease_expires_at"] > request_started_at + timedelta(minutes=3, seconds=10):
+        return
+    await pool.execute(
+        """UPDATE public.spotify_chart_backfills SET status = 'pending',
+             lease_expires_at = NULL,
+             last_error = 'The previous request stopped before saving progress. Resume to retry this date.',
+             updated_at = now()
+           WHERE chart_type = $1 AND country_code = $2 AND status = 'running'
+             AND lease_expires_at = $3""",
+        chart_type,
+        country,
+        lease["lease_expires_at"],
+    )
+
+
 @app.post("/api/chart-history/backfill")
 async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[str, Any]:
     chart_type = request.chart_type
@@ -2891,6 +2921,14 @@ async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[s
            for uri in entity_uris + (target_entity_uris or [])):
         raise HTTPException(status_code=400, detail="The chart selection list is invalid.")
 
+    pool = await get_history_pool()
+    request_started_at = await pool.fetchval("SELECT now()")
+    previous_lease = await pool.fetchval(
+        """SELECT lease_expires_at FROM public.spotify_chart_backfills
+           WHERE chart_type = $1 AND country_code = $2""",
+        chart_type,
+        country,
+    )
     try:
         return await run_durable_history_backfill_batch(
             chart_type,
@@ -2902,4 +2940,14 @@ async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[s
             target_entity_uris=target_entity_uris,
         )
     except ChartHistoryStorageError as error:
-        raise HTTPException(status_code=503, detail="Historical storage is unavailable.") from error
+        await _release_failed_backfill_lease(pool, chart_type, country, previous_lease, request_started_at)
+        raise HTTPException(status_code=503, detail="Historical storage is unavailable. Resume to retry the saved date.") from error
+    except HTTPException:
+        await _release_failed_backfill_lease(pool, chart_type, country, previous_lease, request_started_at)
+        raise
+    except Exception as error:
+        await _release_failed_backfill_lease(pool, chart_type, country, previous_lease, request_started_at)
+        raise HTTPException(
+            status_code=503,
+            detail="The backfill stopped before saving progress. Resume to retry the saved date.",
+        ) from error
