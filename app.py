@@ -475,6 +475,7 @@ class TrackingConfigInput(BaseModel):
     country_code: str = Field(min_length=2, max_length=6)
     enabled: bool = True
     backfill_start_date: calendar_date | None = None
+    backfill_end_date: calendar_date | None = None
 
 
 class ChartJobRetryInput(BaseModel):
@@ -735,7 +736,7 @@ async def list_tracking_configs() -> list[dict[str, Any]]:
     pool = await get_history_pool()
     rows = await pool.fetch(
         """SELECT c.entity_uri, s.entity_type, s.entity_name, c.chart_type,
-                  c.country_code, c.enabled, c.backfill_start_date, c.updated_at
+                  c.country_code, c.enabled, c.backfill_start_date, c.backfill_end_date, c.updated_at
            FROM public.spotify_chart_tracking_configs c
            JOIN public.spotify_chart_selections s ON s.entity_uri = c.entity_uri
            WHERE s.is_archived = false
@@ -743,6 +744,7 @@ async def list_tracking_configs() -> list[dict[str, Any]]:
     )
     return [
         {**dict(row), "backfill_start_date": row["backfill_start_date"].isoformat() if row["backfill_start_date"] else None,
+         "backfill_end_date": row["backfill_end_date"].isoformat() if row["backfill_end_date"] else None,
          "updated_at": row["updated_at"].isoformat()}
         for row in rows
     ]
@@ -753,6 +755,8 @@ async def save_tracking_config(config: TrackingConfigInput) -> dict[str, Any]:
     require_spotify_connection()
     if not is_valid_entity_uri(config.entity_uri):
         raise HTTPException(status_code=400, detail="Choose a valid Spotify entity.")
+    if config.backfill_start_date and config.backfill_end_date and config.backfill_end_date < config.backfill_start_date:
+        raise HTTPException(status_code=400, detail="Backfill end date must be on or after its start date.")
     country = config.country_code.upper()
     if country != "ALL" and country not in {item.value for item in Countries}:
         raise HTTPException(status_code=400, detail="Choose a country from the list.")
@@ -773,21 +777,25 @@ async def save_tracking_config(config: TrackingConfigInput) -> dict[str, Any]:
             for country_code in countries_to_save:
                 row = await connection.fetchrow(
                     """INSERT INTO public.spotify_chart_tracking_configs
-                         (entity_uri, chart_type, country_code, enabled, backfill_start_date)
-                       SELECT $1, $2, $3, $4, $5
+                         (entity_uri, chart_type, country_code, enabled, backfill_start_date, backfill_end_date)
+                       SELECT $1, $2, $3, $4, $5, $6
                        WHERE EXISTS (SELECT 1 FROM public.spotify_chart_selections
                                      WHERE entity_uri = $1 AND is_archived = false)
                        ON CONFLICT (entity_uri, chart_type, country_code) DO UPDATE SET
                          enabled = EXCLUDED.enabled,
                          backfill_start_date = COALESCE(EXCLUDED.backfill_start_date,
                                                          public.spotify_chart_tracking_configs.backfill_start_date),
+                         backfill_end_date = COALESCE(EXCLUDED.backfill_end_date,
+                                                       public.spotify_chart_tracking_configs.backfill_end_date),
                          updated_at = now()
-                       RETURNING entity_uri, chart_type, country_code, enabled, backfill_start_date, updated_at""",
+                       RETURNING entity_uri, chart_type, country_code, enabled, backfill_start_date, backfill_end_date, updated_at""",
                     config.entity_uri, config.chart_type, country_code, config.enabled, config.backfill_start_date,
+                    config.backfill_end_date,
                 )
                 if row is None:
                     raise HTTPException(status_code=404, detail="Save the entity to your tracked list before configuring its charts.")
                 saved.append({**dict(row), "backfill_start_date": row["backfill_start_date"].isoformat() if row["backfill_start_date"] else None,
+                              "backfill_end_date": row["backfill_end_date"].isoformat() if row["backfill_end_date"] else None,
                               "updated_at": row["updated_at"].isoformat()})
     return {"saved": saved, "country_count": len(saved)} if country == "ALL" else saved[0]
 
@@ -2700,6 +2708,7 @@ async def chart_history_backfill_progress(
     chart_type: str = Query(...),
     country: str = Query(..., min_length=2, max_length=6),
     start_date: calendar_date = Query(...),
+    end_date: calendar_date = Query(...),
     entity_uri: str = Query(..., min_length=16, max_length=128),
 ) -> dict[str, Any]:
     require_spotify_connection()
@@ -2724,12 +2733,19 @@ async def chart_history_backfill_progress(
         chart_type, country,
     )
     fingerprint = hashlib.sha256(entity_uri.encode("utf-8")).hexdigest()
-    if job is None or job["selection_fingerprint"] != fingerprint or start_date < job["start_date"]:
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="Backfill end date must be on or after its start date.")
+    if (
+        job is None
+        or job["selection_fingerprint"] != fingerprint
+        or job["start_date"] != start_date
+        or job["target_date"] != end_date
+    ):
         return {"complete": False, "status": "pending", "processedDates": 0, "totalDates": 0}
 
     step = CHART_STEPS[chart_type]
-    total_dates = max(0, (job["target_date"] - job["start_date"]).days // step + 1)
-    complete = job["next_date"] > job["target_date"]
+    total_dates = max(0, (end_date - start_date).days // step + 1)
+    complete = job["next_date"] > end_date
     return {
         "complete": complete,
         "status": "complete" if complete else job["status"],
@@ -2751,6 +2767,8 @@ async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[s
         raise HTTPException(status_code=400, detail="Choose a supported songs or artists chart to backfill history.")
     if country not in {item.value for item in Countries}:
         raise HTTPException(status_code=400, detail="Choose a country from the list.")
+    if request.start_date > request.target_date:
+        raise HTTPException(status_code=400, detail="Backfill end date must be on or after its start date.")
 
     entity_uris = list(dict.fromkeys(request.entity_uris))
     target_entity_uris = list(dict.fromkeys(request.target_entity_uris or [])) or None

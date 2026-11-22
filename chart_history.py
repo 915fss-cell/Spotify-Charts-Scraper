@@ -309,12 +309,13 @@ async def ensure_backfill_job(
                 old_start = existing["start_date"]
                 old_target = existing["target_date"]
                 old_next = existing["next_date"]
-                new_start = min(start_date, old_start)
-                new_target = max(target_date, old_target)
+                new_start = start_date
+                new_target = target_date
                 lease_expires_at = existing["lease_expires_at"]
                 selection_changed = existing["selection_fingerprint"] != selection_fingerprint
                 active_lease = lease_expires_at is not None and lease_expires_at > datetime.now(lease_expires_at.tzinfo)
-                reset = new_start < old_start or (selection_changed and not active_lease)
+                start_changed = new_start != old_start
+                reset = start_changed or (selection_changed and not active_lease)
                 saved_fingerprint = existing["selection_fingerprint"] if selection_changed and active_lease else selection_fingerprint
                 next_date = new_start if reset else old_next
                 processed_dates = 0 if reset else existing["processed_dates"]
