@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import secrets
@@ -2691,6 +2692,53 @@ async def chart_history_backfill_queue_step() -> dict[str, Any]:
         "state": "complete" if queue["remainingDates"] == 0 else "batch",
         "batch": {**progress, "chartType": job["chart_type"], "country": job["country_code"]},
         "queue": queue,
+    }
+
+
+@app.get("/api/chart-history/backfill/progress")
+async def chart_history_backfill_progress(
+    chart_type: str = Query(...),
+    country: str = Query(..., min_length=2, max_length=6),
+    start_date: calendar_date = Query(...),
+    entity_uri: str = Query(..., min_length=16, max_length=128),
+) -> dict[str, Any]:
+    require_spotify_connection()
+    country = country.upper()
+    if chart_type not in HISTORY_CHART_TYPES:
+        raise HTTPException(status_code=400, detail="Choose a supported chart type.")
+    if country not in {item.value for item in Countries}:
+        raise HTTPException(status_code=400, detail="Choose a country from the list.")
+    if not is_valid_entity_uri(entity_uri):
+        raise HTTPException(status_code=400, detail="Choose a valid Spotify entity.")
+    allowed_selection_types = {"artist"} if chart_type in {"daily_top_artists", "weekly_top_artists", "weekly_top_albums"} else {"artist", "track"}
+    if entity_uri.split(":")[1] not in allowed_selection_types:
+        raise HTTPException(status_code=400, detail="The selected entity is not supported by this chart.")
+
+    pool = await get_history_pool()
+    job = await pool.fetchrow(
+        """SELECT start_date, target_date, next_date, processed_dates, total_dates,
+                  succeeded_dates, unavailable_dates, retry_dates, status, last_error,
+                  selection_fingerprint
+           FROM public.spotify_chart_backfills
+           WHERE chart_type = $1 AND country_code = $2""",
+        chart_type, country,
+    )
+    fingerprint = hashlib.sha256(entity_uri.encode("utf-8")).hexdigest()
+    if job is None or job["selection_fingerprint"] != fingerprint or start_date < job["start_date"]:
+        return {"complete": False, "status": "pending", "processedDates": 0, "totalDates": 0}
+
+    step = CHART_STEPS[chart_type]
+    total_dates = max(0, (job["target_date"] - job["start_date"]).days // step + 1)
+    complete = job["next_date"] > job["target_date"]
+    return {
+        "complete": complete,
+        "status": "complete" if complete else job["status"],
+        "startDate": job["start_date"].isoformat(),
+        "targetDate": job["target_date"].isoformat(),
+        "nextDate": job["next_date"].isoformat(),
+        "processedDates": min(job["processed_dates"], total_dates),
+        "totalDates": total_dates,
+        "error": job["last_error"],
     }
 
 

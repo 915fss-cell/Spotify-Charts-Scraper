@@ -1130,8 +1130,23 @@
       for (const [index, marketOption] of markets.entries()) {
         const country = marketOption.value;
         const marketName = marketOption.textContent;
-        setTrackingRunStatus(`Running · Fetching ${marketName} (${index + 1} of ${markets.length} markets).`, "running");
+        setTrackingRunStatus(`Checking saved progress for ${marketName} (${index + 1} of ${markets.length} markets).`, "running");
         try {
+          const savedProgressParams = new URLSearchParams({
+            chart_type: chartType,
+            country,
+            start_date: startDate,
+            entity_uri: entityUri,
+          });
+          const savedProgress = await requestJson(`/api/chart-history/backfill/progress?${savedProgressParams}`);
+          if (savedProgress.complete) {
+            completedMarkets += 1;
+            setTrackingRunStatus(`${marketName} is already complete (${index + 1} of ${markets.length}); skipping saved dates.`, "running");
+            continue;
+          }
+          if (savedProgress.nextDate) {
+            setTrackingRunStatus(`Resuming ${marketName} from ${savedProgress.nextDate} (${index + 1} of ${markets.length}).`, "running");
+          }
           const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
           const chart = await requestJson(`/api/charts?${chartParams}`);
           const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
@@ -1157,7 +1172,6 @@
               "running",
             );
             if (progress.error) throw new Error(`Backfill paused: ${progress.error}. Saved progress can be resumed.`);
-            if (!progress.complete) await new Promise((resolve) => window.setTimeout(resolve, 2000));
           } while (!progress.complete);
           completedMarkets += 1;
         } catch (error) {
@@ -1294,7 +1308,6 @@
         }
         const batch = result.batch || {};
         setStatus("backfill-runner-status", `${Number(batch.processedDates || 0).toLocaleString()} of ${Number(batch.totalDates || 0).toLocaleString()} dates processed for ${batch.chartType || "current chart"} / ${batch.country || "current market"}; ${remainingDates.toLocaleString()} remain across the queue.`);
-        await new Promise((resolve) => window.setTimeout(resolve, 2000));
       }
     } catch (error) {
       finalMessage = `Backfill stopped: ${error.message}. Saved progress is safe to resume.`;
