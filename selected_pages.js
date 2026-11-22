@@ -1236,7 +1236,9 @@
         const endDate = button.dataset.configEnd || latestDate;
         if (endDate > latestDate) throw new Error(`End date is after the latest chart date (${latestDate}).`);
         const uri = button.dataset.backfillConfig;
-        const progress = await requestJson("/api/chart-history/backfill", {
+        let progress;
+        do {
+          progress = await requestJson("/api/chart-history/backfill", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1247,9 +1249,15 @@
             entity_uris: [uri],
             target_entity_uris: [uri],
           }),
-        });
-        setStatus("collection-status", `Backfill ${progress.status}: ${Number(progress.processedDates || 0)} of ${Number(progress.totalDates || 0)} dates processed. Select “Backfill next batch” again to resume.`);
+          });
+          setStatus(
+            "collection-status",
+            `Backfill ${progress.status}: ${Number(progress.processedDates || 0).toLocaleString()} of ${Number(progress.totalDates || 0).toLocaleString()} dates processed${progress.complete ? ". Complete." : ". Continuing through the selected range…"}`,
+          );
+          if (progress.error) throw new Error(`Backfill paused: ${progress.error}. Saved progress can be resumed.`);
+        } while (!progress.complete);
         await loadHistoryManagement();
+
       } else {
         await requestJson("/api/tracking/configs", {
           method: "POST",
