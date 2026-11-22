@@ -1180,6 +1180,11 @@
               `Running · ${marketName} (${index + 1} of ${markets.length}) · ${startDate} to ${endDate} · ${Number(progress.processedDates || 0).toLocaleString()} of ${Number(progress.totalDates || 0).toLocaleString()} chart dates.`,
               "running",
             );
+            if (progress.waiting) {
+              const waitSeconds = Math.min(5, Math.max(1, Number(progress.retryAfterSeconds) || 1));
+              setTrackingRunStatus(`Waiting for the current ${marketName} backfill attempt to finish before resuming.`, "running");
+              await new Promise((resolve) => window.setTimeout(resolve, waitSeconds * 1000));
+            }
             if (progress.error) throw new Error(`Backfill paused: ${progress.error}. Saved progress can be resumed.`);
           } while (!progress.complete);
           completedMarkets += 1;
@@ -1195,7 +1200,7 @@
       }
 
       const summary = failures.length
-        ? `${completedMarkets} of ${markets.length} markets complete; ${failures.length} need another attempt${pausedForRateLimit ? ". Rate limit reached; resume after it clears." : `: ${failures.slice(0, 4).map((item) => item.marketName).join(", ")}${failures.length > 4 ? `, and ${failures.length - 4} more` : ""}.`} Use Resume selected to retry.`
+        ? `${completedMarkets} of ${markets.length} markets complete; ${failures.length} need another attempt${pausedForRateLimit ? ". Rate limit reached; resume after it clears." : `: ${failures.slice(0, 4).map((item) => `${item.marketName} (${item.message})`).join(", ")}${failures.length > 4 ? `, and ${failures.length - 4} more` : ""}.`} Use Resume selected to retry.`
         : `All ${completedMarkets.toLocaleString()} ${completedMarkets === 1 ? "market is" : "markets are"} active and backfilled.`;
       setTrackingRunStatus(`${failures.length ? "Finished with issues" : "Done"} · ${summary}`, failures.length ? "error" : "done");
       setStatus("collection-status", `Tracker for ${entity.textContent}: ${summary}`, failures.length > 0);
@@ -1254,6 +1259,11 @@
             "collection-status",
             `Backfill ${progress.status}: ${Number(progress.processedDates || 0).toLocaleString()} of ${Number(progress.totalDates || 0).toLocaleString()} dates processed${progress.complete ? ". Complete." : ". Continuing through the selected range…"}`,
           );
+          if (progress.waiting) {
+            const waitSeconds = Math.min(5, Math.max(1, Number(progress.retryAfterSeconds) || 1));
+            setStatus("collection-status", "Waiting for the current backfill attempt to finish before resuming.");
+            await new Promise((resolve) => window.setTimeout(resolve, waitSeconds * 1000));
+          }
           if (progress.error) throw new Error(`Backfill paused: ${progress.error}. Saved progress can be resumed.`);
         } while (!progress.complete);
         await loadHistoryManagement();
