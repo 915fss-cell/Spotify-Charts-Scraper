@@ -582,8 +582,8 @@
       byId("tracking-config-count").textContent = `${configs.length.toLocaleString()} configurations`;
       byId("tracking-config-list").innerHTML = configs.length ? configs.map((config) => `
         <div class="history-config-row">
-          <div class="history-config-copy"><strong>${escapeHtml(config.entity_name)} · ${escapeHtml(config.chart_type.replaceAll("_", " "))}</strong><span>${escapeHtml(config.country_code)} · ${config.backfill_start_date ? `from ${escapeHtml(config.backfill_start_date)}` : "start date not set"} · ${config.enabled ? "Active" : "Paused"}</span></div>
-          ${config.backfill_start_date ? `<button class="quiet-button" type="button" data-backfill-config="${escapeHtml(config.entity_uri)}" data-config-chart="${escapeHtml(config.chart_type)}" data-config-country="${escapeHtml(config.country_code)}" data-config-start="${escapeHtml(config.backfill_start_date)}">Backfill next batch</button>` : ""}
+          <div class="history-config-copy"><strong>${escapeHtml(config.entity_name)} · ${escapeHtml(config.chart_type.replaceAll("_", " "))}</strong><span>${escapeHtml(config.country_code)} · ${config.backfill_start_date ? `from ${escapeHtml(config.backfill_start_date)} to ${escapeHtml(config.backfill_end_date || "latest")}` : "date range not set"} · ${config.enabled ? "Active" : "Paused"}</span></div>
+          ${config.backfill_start_date ? `<button class="quiet-button" type="button" data-backfill-config="${escapeHtml(config.entity_uri)}" data-config-chart="${escapeHtml(config.chart_type)}" data-config-country="${escapeHtml(config.country_code)}" data-config-start="${escapeHtml(config.backfill_start_date)}" data-config-end="${escapeHtml(config.backfill_end_date || "")}">Backfill next batch</button>` : ""}
           <button class="quiet-button" type="button" data-toggle-config="${escapeHtml(config.entity_uri)}" data-config-chart="${escapeHtml(config.chart_type)}" data-config-country="${escapeHtml(config.country_code)}" data-config-enabled="${String(config.enabled)}">${config.enabled ? "Pause" : "Resume"}</button>
         </div>`).join("") : '<p class="history-empty-row">No chart tracking configured yet.</p>';
       byId("collection-runs-list").innerHTML = runs.items.length ? runs.items.map((run) => `<div class="history-run-row"><span>Run #${run.id} · ${escapeHtml(run.source)} · ${escapeHtml(run.status)}${run.summary_error ? `<small class="history-run-error">${escapeHtml(run.summary_error)}</small>` : ""}</span><span>${Number(run.completed_chart_keys || 0)} / ${Number(run.requested_chart_keys || 0)} completed · ${Number(run.unavailable_chart_keys || 0)} unavailable · ${Number(run.failed_chart_keys || 0)} failed · ${run.created_at ? escapeHtml(new Date(run.created_at).toLocaleString()) : ""}</span></div>`).join("") : '<p class="history-empty-row">No collection runs recorded.</p>';
@@ -1092,6 +1092,8 @@
     const form = byId("tracking-config-form");
     const startButton = form.querySelector('button[type="submit"]');
     const resumeButton = byId("tracking-resume-selected");
+    const today = new Date();
+    byId("tracking-end-date").value ||= `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
     if (!form.reportValidity() || startButton.disabled || resumeButton.disabled) return;
 
     const entity = byId("tracking-entity").selectedOptions[0];
@@ -1103,7 +1105,11 @@
       ? Array.from(countrySelect.options).filter((option) => option.value && option.value !== "ALL")
       : [countrySelect.selectedOptions[0]];
     const startDate = byId("tracking-start-date").value;
-    if (!entityUri || !startDate || !markets.length) return;
+    const endDate = byId("tracking-end-date").value;
+    if (!entityUri || !startDate || !endDate || endDate < startDate || !markets.length) {
+      if (endDate < startDate) setTrackingRunStatus("Backfill end date must be on or after its start date.", "error");
+      return;
+    }
 
     startButton.disabled = true;
     resumeButton.disabled = true;
@@ -1123,6 +1129,7 @@
             country_code: selectedCountry,
             enabled: true,
             backfill_start_date: startDate,
+            backfill_end_date: endDate,
           }),
         });
       }
@@ -1130,13 +1137,30 @@
       for (const [index, marketOption] of markets.entries()) {
         const country = marketOption.value;
         const marketName = marketOption.textContent;
-        setTrackingRunStatus(`Running · Fetching ${marketName} (${index + 1} of ${markets.length} markets).`, "running");
+        setTrackingRunStatus(`Checking saved progress for ${marketName} (${index + 1} of ${markets.length} markets).`, "running");
         try {
+          const savedProgressParams = new URLSearchParams({
+            chart_type: chartType,
+            country,
+            start_date: startDate,
+            end_date: endDate,
+            entity_uri: entityUri,
+          });
+          const savedProgress = await requestJson(`/api/chart-history/backfill/progress?${savedProgressParams}`);
+          if (savedProgress.complete) {
+            completedMarkets += 1;
+            setTrackingRunStatus(`${marketName} is already complete (${index + 1} of ${markets.length}); skipping saved dates.`, "running");
+            continue;
+          }
+          if (savedProgress.nextDate) {
+            setTrackingRunStatus(`Resuming ${marketName} from ${savedProgress.nextDate} (${index + 1} of ${markets.length}).`, "running");
+          }
           const chartParams = new URLSearchParams({ type: chartType, country, date: "latest" });
           const chart = await requestJson(`/api/charts?${chartParams}`);
-          const targetDate = String(chart.displayChart?.date || "").slice(0, 10);
-          if (!targetDate) throw new Error("Spotify did not return a latest chart date.");
-          if (startDate > targetDate) throw new Error(`Start date is after the latest chart date (${targetDate}).`);
+          const latestDate = String(chart.displayChart?.date || "").slice(0, 10);
+          if (!latestDate) throw new Error("Spotify did not return a latest chart date.");
+          if (startDate > latestDate) throw new Error(`Start date is after the latest chart date (${latestDate}).`);
+          if (endDate > latestDate) throw new Error(`End date is after the latest chart date (${latestDate}).`);
 
           let progress;
           do {
@@ -1147,17 +1171,16 @@
                 chart_type: chartType,
                 country,
                 start_date: startDate,
-                target_date: targetDate,
+                target_date: endDate,
                 entity_uris: [entityUri],
                 target_entity_uris: [entityUri],
               }),
             });
             setTrackingRunStatus(
-              `Running · ${marketName} (${index + 1} of ${markets.length}) · ${Number(progress.processedDates || 0).toLocaleString()} of ${Number(progress.totalDates || 0).toLocaleString()} chart dates.`,
+              `Running · ${marketName} (${index + 1} of ${markets.length}) · ${startDate} to ${endDate} · ${Number(progress.processedDates || 0).toLocaleString()} of ${Number(progress.totalDates || 0).toLocaleString()} chart dates.`,
               "running",
             );
             if (progress.error) throw new Error(`Backfill paused: ${progress.error}. Saved progress can be resumed.`);
-            if (!progress.complete) await new Promise((resolve) => window.setTimeout(resolve, 2000));
           } while (!progress.complete);
           completedMarkets += 1;
         } catch (error) {
@@ -1208,8 +1231,10 @@
           date: "latest",
         });
         const chart = await requestJson(`/api/charts?${chartParams}`);
-        const targetDate = chart.displayChart?.date;
-        if (!targetDate) throw new Error("Spotify did not return a chart date for this backfill.");
+        const latestDate = String(chart.displayChart?.date || "").slice(0, 10);
+        if (!latestDate) throw new Error("Spotify did not return a chart date for this backfill.");
+        const endDate = button.dataset.configEnd || latestDate;
+        if (endDate > latestDate) throw new Error(`End date is after the latest chart date (${latestDate}).`);
         const uri = button.dataset.backfillConfig;
         const progress = await requestJson("/api/chart-history/backfill", {
           method: "POST",
@@ -1218,7 +1243,7 @@
             chart_type: button.dataset.configChart,
             country: button.dataset.configCountry,
             start_date: button.dataset.configStart,
-            target_date: String(targetDate).slice(0, 10),
+            target_date: endDate,
             entity_uris: [uri],
             target_entity_uris: [uri],
           }),
@@ -1294,7 +1319,6 @@
         }
         const batch = result.batch || {};
         setStatus("backfill-runner-status", `${Number(batch.processedDates || 0).toLocaleString()} of ${Number(batch.totalDates || 0).toLocaleString()} dates processed for ${batch.chartType || "current chart"} / ${batch.country || "current market"}; ${remainingDates.toLocaleString()} remain across the queue.`);
-        await new Promise((resolve) => window.setTimeout(resolve, 2000));
       }
     } catch (error) {
       finalMessage = `Backfill stopped: ${error.message}. Saved progress is safe to resume.`;

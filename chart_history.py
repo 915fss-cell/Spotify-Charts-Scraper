@@ -309,13 +309,17 @@ async def ensure_backfill_job(
                 old_start = existing["start_date"]
                 old_target = existing["target_date"]
                 old_next = existing["next_date"]
-                new_start = min(start_date, old_start)
-                new_target = max(target_date, old_target)
-                reset = new_start < old_start
+                new_start = start_date
+                new_target = target_date
+                lease_expires_at = existing["lease_expires_at"]
+                selection_changed = existing["selection_fingerprint"] != selection_fingerprint
+                active_lease = lease_expires_at is not None and lease_expires_at > datetime.now(lease_expires_at.tzinfo)
+                start_changed = new_start != old_start
+                reset = start_changed or (selection_changed and not active_lease)
+                saved_fingerprint = existing["selection_fingerprint"] if selection_changed and active_lease else selection_fingerprint
                 next_date = new_start if reset else old_next
                 processed_dates = 0 if reset else existing["processed_dates"]
                 status = existing["status"]
-                lease_expires_at = existing["lease_expires_at"]
                 last_error = existing["last_error"]
 
                 if not reset and new_target > old_target and old_next > old_target:
@@ -347,7 +351,7 @@ async def ensure_backfill_job(
                     status,
                     lease_expires_at,
                     last_error,
-                    selection_fingerprint,
+                    saved_fingerprint,
                     chart_type,
                     country,
                 )
@@ -684,6 +688,27 @@ async def run_durable_history_backfill_batch(
 
         if job is None:
             if prior and prior["status"] in {"succeeded", "unavailable", "complete"}:
+                if prior["status"] != "unavailable" and cached:
+                    payload = cached["payload"]
+                    if isinstance(payload, str):
+                        payload = json.loads(payload)
+                    entries = payload.get("entries") if isinstance(payload, dict) else None
+                    response_date = parse_chart_date(cached["chart_date"])
+                    if isinstance(entries, list) and response_date is not None:
+                        async with pool.acquire() as connection:
+                            async with connection.transaction():
+                                await save_chart_snapshot(
+                                    pool, chart_type, country, response_date, entries, allowed_uris,
+                                    connection, {uri for uri in allowed_uris or set() if uri.startswith("spotify:artist:")},
+                                )
+                                await connection.execute(
+                                    """UPDATE public.spotify_chart_backfills SET next_date = $1,
+                                         processed_dates = processed_dates + 1, succeeded_dates = succeeded_dates + 1,
+                                         updated_at = now()
+                                       WHERE chart_type = $2 AND country_code = $3 AND next_date = $4""",
+                                    chart_day + timedelta(days=step), chart_type, country, chart_day,
+                                )
+                        continue
                 async with pool.acquire() as connection:
                     async with connection.transaction():
                         await connection.execute(
