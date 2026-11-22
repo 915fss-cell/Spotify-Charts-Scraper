@@ -1,10 +1,14 @@
 import asyncio
 import hashlib
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
+
 import app
+import chart_history
 
 
 class BackfillQueuePoolStub:
@@ -15,6 +19,17 @@ class BackfillQueuePoolStub:
     async def fetchrow(self, *args):
         self.calls.append(args)
         return self.rows.pop(0)
+
+
+class BackfillConnectionContext:
+    def __init__(self, connection):
+        self.connection = connection
+
+    async def __aenter__(self):
+        return self.connection
+
+    async def __aexit__(self, *_):
+        return None
 
 
 class HistoryBackfillRunnerTests(unittest.TestCase):
@@ -153,5 +168,86 @@ class HistoryBackfillRunnerTests(unittest.TestCase):
             self.assertEqual(result["retryAfterSeconds"], 45)
             self.assertEqual(result["queue"]["remainingDates"], 5100)
             self.assertEqual(pool.calls[-1][3], "2024-01-06")
+
+        asyncio.run(run())
+
+    def test_active_backfill_claim_returns_wait_duration(self):
+        async def run():
+            connection = SimpleNamespace(fetchrow=AsyncMock(return_value=None))
+            pool = SimpleNamespace(
+                acquire=lambda: BackfillConnectionContext(connection),
+                fetchval=AsyncMock(return_value=4),
+            )
+            progress = {
+                "complete": False,
+                "status": "running",
+                "processedDates": 0,
+                "totalDates": 2,
+            }
+            with patch.object(chart_history, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                chart_history, "ensure_backfill_job", new=AsyncMock()
+            ), patch.object(chart_history, "get_backfill_progress", new=AsyncMock(return_value=progress)):
+                result = await chart_history.run_durable_history_backfill_batch(
+                    "daily_top_songs", "UA", date(2024, 12, 15), date(2024, 12, 14), [], AsyncMock()
+                )
+
+            self.assertTrue(result["waiting"])
+            self.assertEqual(result["retryAfterSeconds"], 4)
+
+        asyncio.run(run())
+
+    def test_scraper_initialization_failure_releases_backfill_lease(self):
+        async def run():
+            connection = SimpleNamespace(fetchrow=AsyncMock(return_value={
+                "next_date": date(2024, 12, 14),
+                "target_date": date(2024, 12, 15),
+            }))
+            pool = SimpleNamespace(
+                acquire=lambda: BackfillConnectionContext(connection),
+                execute=AsyncMock(return_value="UPDATE 1"),
+            )
+            with patch.object(chart_history, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                chart_history, "ensure_backfill_job", new=AsyncMock()
+            ):
+                with self.assertRaises(HTTPException) as error:
+                    await chart_history.run_durable_history_backfill_batch(
+                        "daily_top_songs", "UA", date(2024, 12, 15), date(2024, 12, 14), [],
+                        AsyncMock(side_effect=RuntimeError("token refresh failed")),
+                    )
+
+            self.assertEqual(error.exception.status_code, 502)
+            self.assertIn("paused", pool.execute.await_args.args[0])
+
+        asyncio.run(run())
+
+    def test_failed_backfill_request_releases_its_new_lease(self):
+        async def run():
+            now = datetime.now(timezone.utc)
+            pool = SimpleNamespace(
+                fetchrow=AsyncMock(return_value={"lease_expires_at": now + timedelta(minutes=2)}),
+                execute=AsyncMock(return_value="UPDATE 1"),
+            )
+            await app._release_failed_backfill_lease(
+                pool, "daily_top_songs", "UA", None, now
+            )
+
+            pool.execute.assert_awaited_once()
+            self.assertIn("status = 'pending'", pool.execute.await_args.args[0])
+
+        asyncio.run(run())
+
+    def test_failed_request_preserves_preexisting_lease(self):
+        async def run():
+            now = datetime.now(timezone.utc)
+            previous_lease = now + timedelta(minutes=2)
+            pool = SimpleNamespace(
+                fetchrow=AsyncMock(return_value={"lease_expires_at": previous_lease}),
+                execute=AsyncMock(),
+            )
+            await app._release_failed_backfill_lease(
+                pool, "daily_top_songs", "UA", previous_lease, now
+            )
+
+            pool.execute.assert_not_awaited()
 
         asyncio.run(run())

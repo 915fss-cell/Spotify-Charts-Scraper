@@ -639,6 +639,17 @@ async def run_durable_history_backfill_batch(
     if claim is None:
         progress = await get_backfill_progress(pool, chart_type, country, target_date)
         totals = await get_stream_totals(pool, chart_type, country, target_date, total_entity_uris or []) if progress["complete"] else {}
+        if not progress["complete"] and progress["status"] == "running":
+            lease_seconds = await pool.fetchval(
+                """SELECT ceil(extract(epoch FROM (lease_expires_at - now())))
+                   FROM public.spotify_chart_backfills
+                   WHERE chart_type = $1 AND country_code = $2 AND status = 'running'
+                     AND lease_expires_at > now()""",
+                chart_type,
+                country,
+            )
+            progress["waiting"] = True
+            progress["retryAfterSeconds"] = max(1, int(lease_seconds or 1))
         return {**progress, "totals": totals}
 
     try:
@@ -646,6 +657,12 @@ async def run_durable_history_backfill_batch(
     except HTTPException:
         await _pause_job(pool, chart_type, country, "Spotify authorization needs attention. Reconnect and reload to resume.")
         raise
+    except Exception as error:
+        await _pause_job(pool, chart_type, country, "Spotify could not start the history request. Resume to retry this date.")
+        raise HTTPException(
+            status_code=502,
+            detail="Spotify could not start the history request. Check the connection, then resume the saved backfill.",
+        ) from error
 
     cursor = claim["next_date"]
     batch_end = min(target_date, claim["target_date"])
@@ -664,7 +681,7 @@ async def run_durable_history_backfill_batch(
                 chart_type, country, requested, chart_day,
             )
             cached = await connection.fetchrow(
-                """SELECT payload FROM public.spotify_chart_payload_cache
+                """SELECT payload, chart_date FROM public.spotify_chart_payload_cache
                    WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3""",
                 chart_type, country, requested,
             )
