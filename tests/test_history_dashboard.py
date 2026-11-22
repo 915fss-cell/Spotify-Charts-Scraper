@@ -37,7 +37,84 @@ class HistoryPoolStub:
         return self.fetchrow_results.pop(0)
 
 
+class AsyncContextStub:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+class HistoryWriteConnection:
+    def __init__(self):
+        self.executed = []
+
+    def transaction(self):
+        return AsyncContextStub(self)
+
+    async def fetchval(self, *_args):
+        return False
+
+    async def execute(self, query, *args):
+        self.executed.append((query, args))
+
+
+class HistoryWritePool:
+    def __init__(self, connection, cached_row):
+        self.connection = connection
+        self.cached_row = cached_row
+
+    async def fetchrow(self, *_args):
+        return self.cached_row
+
+    def acquire(self):
+        return AsyncContextStub(self.connection)
+
+
 class HistoryDashboardTests(unittest.TestCase):
+    def test_chart_explorer_save_adds_cached_track_to_history(self):
+        async def run():
+            entry = {
+                "trackMetadata": {
+                    "trackUri": "spotify:track:0123456789abcdef",
+                    "trackName": "Example song",
+                    "artists": [{"name": "Example artist"}],
+                    "displayImageUri": "https://i.scdn.co/image/example-cover",
+                },
+                "chartEntryData": {
+                    "currentRank": 1,
+                    "rankingMetric": {"type": "STREAMS", "value": "1,234"},
+                },
+            }
+            connection = HistoryWriteConnection()
+            pool = HistoryWritePool(connection, {
+                "payload": {"displayChart": {"date": "2026-11-14"}, "entries": [entry]},
+                "chart_date": date(2026, 11, 14),
+            })
+            request = app.ChartEntryHistoryInput(
+                chart_type="daily_top_songs",
+                country_code="us",
+                requested_date="latest",
+                chart_date=date(2026, 11, 14),
+                track_uri="spotify:track:0123456789abcdef",
+            )
+            with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                app, "require_spotify_connection"
+            ), patch.object(app, "save_chart_snapshot", new=AsyncMock(return_value=1)) as save_snapshot:
+                result = await app.save_chart_entry_to_history(request)
+            self.assertTrue(result["saved"])
+            self.assertFalse(result["alreadySaved"])
+            self.assertEqual(result["chartDate"], "2026-11-14")
+            self.assertEqual(result["countryCode"], "US")
+            self.assertEqual(connection.executed[0][1][0], "spotify:track:0123456789abcdef")
+            self.assertEqual(save_snapshot.await_args.args[3], date(2026, 11, 14))
+            self.assertEqual(save_snapshot.await_args.kwargs["connection"], connection)
+
+        asyncio.run(run())
+
     def test_history_calendar_serializes_saved_dates(self):
         async def run():
             pool = HistoryPoolStub()

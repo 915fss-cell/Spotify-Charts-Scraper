@@ -56,6 +56,7 @@
       .history-calendar-chart-picker{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:600}.history-calendar-chart-picker select{min-height:38px;max-width:min(320px,55vw);padding:0 10px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--text)}.history-calendar-chart-picker select:disabled{opacity:.55}.focused-history-calendar{margin:18px 0 24px}.history-calendar-results .focus-card-grid{margin-top:14px}
       @media(max-width:760px){.history-calendar-chart-picker{align-items:flex-start;flex-direction:column}.history-calendar-chart-picker select{max-width:100%;width:100%}}
          .history-chart-wrap{display:flex;flex-direction:column;gap:12px;min-height:0}.tracked-entity-chart-area{position:relative;flex:0 0 340px;height:340px;min-width:0}.tracked-entity-chart-area canvas{width:100%!important;height:100%!important}.tracked-entity-chart-area canvas[hidden]{display:none!important}.tracked-entity-legend{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr));gap:6px;max-height:200px;overflow:auto;padding:2px 4px 2px 2px;overscroll-behavior:contain}.tracked-entity-legend[hidden]{display:none!important}.tracked-entity-legend button{display:flex;align-items:center;gap:8px;min-width:0;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);color:var(--text);font-size:11px;text-align:left;cursor:pointer}.tracked-entity-legend button[aria-pressed="false"]{opacity:.48}.tracked-entity-legend button:focus-visible{outline:2px solid var(--lime);outline-offset:1px}.tracked-entity-legend-swatch{width:10px;height:10px;flex:none;border-radius:3px;background:var(--series-color)}.tracked-entity-legend-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-entity-detail .chart-head{flex-wrap:wrap;gap:8px 14px}.history-entity-detail .chart-date{flex:1;text-align:right}.history-detail-close{flex:none}@media(max-width:640px){.tracked-entity-chart-area{flex-basis:280px;height:280px}.tracked-entity-legend{max-height:180px}.history-entity-detail .chart-date{flex:1 1 100%;order:3;text-align:left}.history-detail-close{margin-left:auto}}
+      .chart-entry-copy{min-width:0;flex:1}.history-save-button{flex:none;min-height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);color:var(--text);font-size:11px;font-weight:700;white-space:nowrap;cursor:pointer}.history-save-button:hover:not(:disabled){border-color:var(--lime);color:var(--lime)}.history-save-button:disabled{opacity:.7;cursor:default}.history-save-button[data-saved="true"]{border-color:#49633b;background:var(--lime-dark);color:var(--lime)}.focused-page .history-save-button{background:#fff;color:#172033;border-color:#e3e7ed}.focused-page .history-save-button:hover:not(:disabled){border-color:#18864b;color:#18864b}.focused-page .history-save-button[data-saved="true"]{background:#eef8f0;border-color:#b6d8bd;color:#176f3f}
  </style>
   </head>
   <body>
@@ -250,6 +251,8 @@
       const byId = (id) => document.getElementById(id);
       let appStatus = null;
       let chartLoadSequence = 0;
+      let activeChartEntries = [];
+      let activeChartContext = null;
       const chartPayloadCache = new Map();
       function rememberChartPayload(chartType, country, date, payload) {
         chartPayloadCache.set(`${chartType}:${country.toUpperCase()}:${date}`, payload);
@@ -388,9 +391,17 @@
           ? `${visibleCount} of ${rows.length} chart ${rows.length === 1 ? "entry" : "entries"} match “${byId("chart-search-input").value.trim()}”.`
           : `Showing all ${rows.length} chart ${rows.length === 1 ? "entry" : "entries"}.`;
       }
-      function renderChart(payload) {
+      function renderChart(payload, chartContext) {
         const metadata = payload.displayChart?.chartMetadata || {};
         const entries = payload.entries || [];
+        activeChartEntries = entries;
+        activeChartContext = {
+          chartType: chartContext.chartType,
+          countryCode: chartContext.countryCode,
+          chartDate: payload.displayChart?.date || (chartContext.requestedDate === "latest" ? "" : chartContext.requestedDate),
+          requestedDate: chartContext.requestedDate,
+        };
+        const canSaveSongs = ["daily_top_songs", "daily_viral_songs", "weekly_top_songs"].includes(activeChartContext.chartType);
         const historyInfo = payload.chartHistory;
         const delivery = payload.delivery || {};
         const sourceTime = delivery.fetchedAt ? new Date(delivery.fetchedAt).toLocaleString() : "Live response";
@@ -416,7 +427,7 @@
           byId("chart-content").innerHTML = '<div><span class="empty-icon" aria-hidden="true">–</span><h3>No entries returned</h3><p>Spotify returned a chart without any entries for this selection.</p></div>';
           return;
         }
-        const rows = entries.map((entry) => {
+        const rows = entries.map((entry, entryIndex) => {
           const meta = entry.trackMetadata || entry.artistMetadata || entry.albumMetadata || {};
           const stats = entry.chartEntryData || {};
           const title = meta.trackName || meta.artistName || meta.albumName || "Untitled";
@@ -431,7 +442,10 @@
           const movement = chartMovement(stats);
           const releaseDate = meta.releaseDate || "—";
           const searchText = `${title} ${artistNames}`.toLocaleLowerCase();
-          return `<tr data-entity-uri="${escapeHtml(entityUri)}" data-search="${escapeHtml(searchText)}"><td class="rank">${escapeHtml(stats.currentRank ?? "—")}</td><td class="movement-cell ${movement.className}" aria-label="${escapeHtml(movement.ariaLabel)}">${escapeHtml(movement.label)}</td><td><div class="track-cell">${image ? `<img class="cover" src="${escapeHtml(image)}" alt="" loading="lazy" />` : '<span class="cover" aria-hidden="true"></span>'}<div>${titleHtml}${artistNames ? `<div class="artist-name">${escapeHtml(artistNames)}</div>` : ""}</div></div></td><td class="metric">${escapeHtml(stats.peakRank ?? "—")}</td><td class="metric">${escapeHtml(stats.previousRank ?? "—")}</td><td class="metric">${escapeHtml(stats.consecutiveAppearancesOnChart ?? "—")}</td><td class="date-cell">${escapeHtml(releaseDate)}</td><td class="date-cell">${escapeHtml(stats.entryDate ?? "—")}</td><td class="metric">${escapeHtml(stats.entryRank ?? "—")}</td><td class="metric">${escapeHtml(stats.appearancesOnChart ?? "—")}</td><td class="metric">${escapeHtml(metric)}</td><td class="metric" data-total-streams>${escapeHtml(totalStreams)}</td></tr>`;
+          const saveButton = canSaveSongs
+            ? `<button class="history-save-button" type="button" data-save-entry="${entryIndex}" aria-label="Save ${escapeHtml(title)} to history"${activeChartContext.chartDate ? "" : " disabled title=\"Chart date is unavailable\""}>Save data</button>`
+            : "";
+          return `<tr data-entity-uri="${escapeHtml(entityUri)}" data-search="${escapeHtml(searchText)}"><td class="rank">${escapeHtml(stats.currentRank ?? "—")}</td><td class="movement-cell ${movement.className}" aria-label="${escapeHtml(movement.ariaLabel)}">${escapeHtml(movement.label)}</td><td><div class="track-cell">${image ? `<img class="cover" src="${escapeHtml(image)}" alt="" loading="lazy" />` : '<span class="cover" aria-hidden="true"></span>'}<div class="chart-entry-copy">${titleHtml}${artistNames ? `<div class="artist-name">${escapeHtml(artistNames)}</div>` : ""}</div>${saveButton}</div></td><td class="metric">${escapeHtml(stats.peakRank ?? "—")}</td><td class="metric">${escapeHtml(stats.previousRank ?? "—")}</td><td class="metric">${escapeHtml(stats.consecutiveAppearancesOnChart ?? "—")}</td><td class="date-cell">${escapeHtml(releaseDate)}</td><td class="date-cell">${escapeHtml(stats.entryDate ?? "—")}</td><td class="metric">${escapeHtml(stats.entryRank ?? "—")}</td><td class="metric">${escapeHtml(stats.appearancesOnChart ?? "—")}</td><td class="metric">${escapeHtml(metric)}</td><td class="metric" data-total-streams>${escapeHtml(totalStreams)}</td></tr>`;
         }).join("");
         byId("chart-content").className = "table-wrap";
         const totalAppearancesLabel = metadata.recurrence === "WEEKLY" ? "Total weeks on chart" : "Total days on chart";
@@ -447,6 +461,36 @@
         event.preventDefault();
         if (!byId("chart-search-input").disabled) applyChartSearch();
       });
+      byId("chart-content").addEventListener("click", async (event) => {
+        const button = event.target.closest("[data-save-entry]");
+        if (!button || button.disabled || !activeChartContext) return;
+        const entry = activeChartEntries[Number(button.dataset.saveEntry)];
+        if (!entry) return;
+        button.disabled = true;
+        button.textContent = "Saving…";
+        try {
+          const result = await requestJson("/api/history/save-chart-entry", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              chart_type: activeChartContext.chartType,
+              country_code: activeChartContext.countryCode,
+              requested_date: activeChartContext.requestedDate,
+              chart_date: activeChartContext.chartDate,
+              track_uri: entry.trackMetadata?.trackUri,
+            }),
+          });
+          button.textContent = result.alreadySaved ? "In history" : "Saved";
+          button.dataset.saved = "true";
+          button.setAttribute("aria-label", `${entry.trackMetadata?.trackName || "Song"} is in history`);
+        } catch (error) {
+          button.disabled = false;
+          button.textContent = "Retry";
+          button.title = error.message;
+          button.setAttribute("aria-label", `Retry saving ${entry.trackMetadata?.trackName || "song"} to history`);
+          showBanner(error.message, true);
+        }
+      });
       byId("chart-search-input").addEventListener("keydown", (event) => {
         if (event.key === "Enter" && (event.isComposing || event.keyCode === 229)) event.preventDefault();
       });
@@ -461,6 +505,7 @@
         const requestId = ++chartLoadSequence;
         const button = byId("load-button");
         const params = new URLSearchParams({ type: byId("chart-type").value, country: byId("country").value, date: byId("chart-date").value.trim() || "latest" });
+        const chartContext = { chartType: params.get("type"), countryCode: params.get("country"), requestedDate: params.get("date") };
         button.disabled = true;
         button.innerHTML = '<span class="spinner" aria-hidden="true"></span>Loading';
         hideBanner();
@@ -480,7 +525,7 @@
           let payload = await requestJson(`/api/charts?${params}`);
           if (requestId !== chartLoadSequence) return;
           if (payload.delivery?.isStale) {
-            renderChart(payload);
+            renderChart(payload, chartContext);
             for (let attempt = 0; attempt < 4 && requestId === chartLoadSequence; attempt += 1) {
               const refreshUrl = `/api/charts/refresh?${params}`;
               const refresh = await requestJson(refreshUrl, { method: "POST" });
@@ -498,7 +543,7 @@
           }
           if (requestId !== chartLoadSequence) return;
           rememberChartPayload(byId("chart-type").value, byId("country").value, byId("chart-date").value.trim() || "latest", payload);
-          renderChart(payload);
+          renderChart(payload, chartContext);
       } catch (error) {
         if (requestId === chartLoadSequence) {
           if (hadChart) {

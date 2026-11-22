@@ -466,6 +466,14 @@ class SelectionInput(BaseModel):
     image_url: str | None = Field(default=None, max_length=2048)
 
 
+class ChartEntryHistoryInput(BaseModel):
+    chart_type: Literal["daily_top_songs", "daily_viral_songs", "weekly_top_songs"]
+    country_code: str = Field(min_length=2, max_length=6)
+    requested_date: str = Field(min_length=1, max_length=10)
+    chart_date: calendar_date
+    track_uri: str = Field(min_length=16, max_length=128)
+
+
 class TrackingConfigInput(BaseModel):
     entity_uri: str = Field(min_length=16, max_length=128)
     chart_type: Literal[
@@ -706,6 +714,93 @@ async def save_selection(selection: SelectionInput) -> dict[str, Any]:
         return selection_response(dict(row))
     except Exception as error:
         raise HTTPException(status_code=503, detail="The selection could not be saved right now.") from error
+
+
+@app.post("/api/history/save-chart-entry")
+async def save_chart_entry_to_history(request: ChartEntryHistoryInput) -> dict[str, Any]:
+    require_spotify_connection()
+    country_code = request.country_code.upper()
+    if country_code not in {item.value for item in Countries}:
+        raise HTTPException(status_code=400, detail="Choose a country from the list.")
+    if request.requested_date != "latest":
+        try:
+            if calendar_date.fromisoformat(request.requested_date).isoformat() != request.requested_date:
+                raise ValueError
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Date must be latest or YYYY-MM-DD.") from error
+    if not is_valid_entity_uri(request.track_uri, "track"):
+        raise HTTPException(status_code=400, detail="Choose a valid Spotify song.")
+
+    pool = await get_history_pool()
+    try:
+        cached_row = await pool.fetchrow(
+            """SELECT payload, chart_date FROM public.spotify_chart_payload_cache
+               WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3""",
+            request.chart_type, country_code, request.requested_date,
+        )
+        if cached_row is None:
+            raise HTTPException(status_code=409, detail="Reload this chart before saving a song to history.")
+        payload = cached_row["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
+            raise HTTPException(status_code=502, detail="The saved chart data is incomplete. Reload the chart and try again.")
+        entry = next((item for item in payload["entries"] if isinstance(item, dict) and entry_entity_uri(item) == request.track_uri), None)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="That song is no longer in the loaded chart. Reload and try again.")
+        values = snapshot_values(entry)
+        chart_date = parse_chart_date((payload.get("displayChart") or {}).get("date") or payload.get("date") or cached_row["chart_date"])
+        if values is None or chart_date is None:
+            raise HTTPException(status_code=502, detail="The saved chart entry is incomplete and could not be added to history.")
+        if chart_date != request.chart_date:
+            raise HTTPException(status_code=409, detail="The chart changed after it loaded. Reload the chart and save the song again.")
+        entity_name, artist_names = values[1], values[2]
+        metadata = entry.get("trackMetadata") or {}
+        image_url = metadata.get("displayImageUri")
+        if image_url:
+            try:
+                image = urlsplit(image_url)
+            except (TypeError, ValueError) as error:
+                raise HTTPException(status_code=400, detail="Spotify artwork URL is invalid.") from error
+            if image.scheme != "https" or image.hostname != "i.scdn.co":
+                raise HTTPException(status_code=400, detail="Spotify artwork must use a trusted Spotify image URL.")
+
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                already_saved = await connection.fetchval(
+                    """SELECT EXISTS (
+                         SELECT 1 FROM public.spotify_chart_snapshots
+                         WHERE chart_type = $1 AND country_code = $2 AND chart_date = $3 AND track_uri = $4
+                       )""",
+                    request.chart_type, country_code, chart_date, request.track_uri,
+                )
+                await connection.execute(
+                    """INSERT INTO public.spotify_chart_selections
+                         (entity_uri, entity_type, entity_name, artist_names, image_url)
+                       VALUES ($1, 'track', $2, $3, $4)
+                       ON CONFLICT (entity_uri) DO UPDATE SET
+                         entity_type = EXCLUDED.entity_type, entity_name = EXCLUDED.entity_name,
+                         artist_names = EXCLUDED.artist_names, image_url = EXCLUDED.image_url,
+                         is_archived = false""",
+                    request.track_uri, entity_name, artist_names, image_url,
+                )
+                saved_count = await save_chart_snapshot(
+                    pool, request.chart_type, country_code, chart_date, [entry], connection=connection,
+                )
+        if not saved_count:
+            raise HTTPException(status_code=422, detail="This song does not contain a savable chart rank or stream count.")
+        return {
+            "saved": True,
+            "alreadySaved": bool(already_saved),
+            "trackUri": request.track_uri,
+            "trackName": entity_name,
+            "chartDate": chart_date.isoformat(),
+            "countryCode": country_code,
+        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="The song could not be saved to history right now.") from error
 
 
 @app.delete("/api/selections/{entity_uri:path}")
@@ -2426,7 +2521,7 @@ async def decorate_chart(raw_payload: dict[str, Any], chart_type: str, country: 
         "complete": False,
         "status": "browsing_only",
         "metric": "rank" if HISTORY_CHART_TYPES.get(chart_type) == "artist" else "streams",
-        "reason": "Charts Explorer is browse-only. History is collected by the tracked-entity collector.",
+        "reason": "Save a song from Charts Explorer to add its chart entry to History.",
     }
     return result
 
