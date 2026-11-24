@@ -67,7 +67,6 @@
         <div>
           <p class="nav-label">Live charts</p>
     <a class="nav-link" href="#live-daily-songs" data-page-nav="live-daily-songs"><span class="nav-glyph" aria-hidden="true">♪</span><span class="nav-text">Daily top songs</span></a>
-    <a class="nav-link" href="#live-daily-viral-songs" data-page-nav="live-daily-viral-songs"><span class="nav-glyph" aria-hidden="true">↗</span><span class="nav-text">Daily viral songs</span></a>
     <a class="nav-link" href="#live-weekly-songs" data-page-nav="live-weekly-songs"><span class="nav-glyph" aria-hidden="true">♪</span><span class="nav-text">Weekly top songs</span></a>
           <a class="nav-link" href="#live-daily-artists" data-page-nav="live-daily-artists"><span class="nav-glyph" aria-hidden="true">◎</span><span class="nav-text">Daily top artists</span></a>
           <a class="nav-link" href="#live-weekly-artists" data-page-nav="live-weekly-artists"><span class="nav-glyph" aria-hidden="true">◎</span><span class="nav-text">Weekly top artists</span></a>
@@ -88,7 +87,7 @@
         <div class="status-banner" id="status-banner" role="status" aria-live="polite"><span class="status-symbol" aria-hidden="true">i</span><span id="status-message"></span></div>
         <form class="filters" id="chart-form">
           <div class="field"><label for="country">Market</label><select id="country" name="country" required></select></div>
-          <div class="field"><label for="chart-type">Chart</label><select id="chart-type" name="type"><option value="daily_top_songs">Daily top songs</option><option value="daily_top_artists">Daily top artists</option><option value="daily_viral_songs">Daily viral songs</option><option value="weekly_top_songs">Weekly top songs</option><option value="weekly_top_artists">Weekly top artists</option><option value="weekly_top_albums">Weekly top albums</option></select></div>
+          <div class="field"><label for="chart-type">Chart</label><select id="chart-type" name="type"><option value="daily_top_songs">Daily top songs</option><option value="daily_top_artists">Daily top artists</option><option value="weekly_top_songs">Weekly top songs</option><option value="weekly_top_artists">Weekly top artists</option><option value="weekly_top_albums">Weekly top albums</option></select></div>
           <div class="field"><label for="chart-date">Date</label><input id="chart-date" name="date" type="text" value="latest" autocomplete="off" aria-describedby="date-help" /></div>
           <button class="load-button" id="load-button" type="submit" disabled>Load chart</button>
         </form>
@@ -208,7 +207,7 @@
           <section class="history-entity-detail" id="history-entity-detail" aria-labelledby="history-entity-detail-title" tabindex="-1" hidden>
             <div class="chart-head"><span class="chart-title" id="history-entity-detail-title">Entity history</span><span class="chart-date" id="history-entity-summary"></span><button class="quiet-button history-detail-close" id="history-entity-detail-close" type="button" aria-label="Close entity history details">Close</button></div>
             <div class="history-detail-filters">
-              <div class="field"><label for="history-detail-chart">Chart</label><select id="history-detail-chart"><option value="">Choose a chart</option><option value="daily_top_songs">Daily top songs</option><option value="daily_viral_songs">Daily viral songs</option><option value="weekly_top_songs">Weekly top songs</option><option value="daily_top_artists">Daily top artists</option><option value="weekly_top_artists">Weekly top artists</option><option value="weekly_top_albums">Weekly top albums</option></select></div>
+              <div class="field"><label for="history-detail-chart">Chart</label><select id="history-detail-chart"><option value="">Choose a chart</option><option value="daily_top_songs">Daily top songs</option><option value="weekly_top_songs">Weekly top songs</option><option value="daily_top_artists">Daily top artists</option><option value="weekly_top_artists">Weekly top artists</option><option value="weekly_top_albums">Weekly top albums</option></select></div>
               <div class="field"><label for="history-detail-country">Region</label><select id="history-detail-country" disabled><option value="">All regions</option></select></div>
               <div class="field"><label for="history-detail-from">From</label><input id="history-detail-from" type="date" /></div>
               <div class="field"><label for="history-detail-to">To</label><input id="history-detail-to" type="date" /></div>
@@ -418,7 +417,7 @@
         saveChartButton.hidden = !canSaveWholeChart;
         saveChartButton.disabled = !canSaveWholeChart || entries.length === 0;
         saveChartButton.textContent = "Save chart to history";
-        const canSaveSongs = ["daily_top_songs", "daily_viral_songs", "weekly_top_songs"].includes(activeChartContext.chartType);
+        const canSaveSongs = ["daily_top_songs", "weekly_top_songs"].includes(activeChartContext.chartType);
         const historyInfo = payload.chartHistory;
         const delivery = payload.delivery || {};
         const sourceTime = delivery.fetchedAt ? new Date(delivery.fetchedAt).toLocaleString() : "Live response";
