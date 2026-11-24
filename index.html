@@ -57,6 +57,7 @@
       @media(max-width:760px){.history-calendar-chart-picker{align-items:flex-start;flex-direction:column}.history-calendar-chart-picker select{max-width:100%;width:100%}}
          .history-chart-wrap{display:flex;flex-direction:column;gap:12px;min-height:0}.tracked-entity-chart-area{position:relative;flex:0 0 340px;height:340px;min-width:0}.tracked-entity-chart-area canvas{width:100%!important;height:100%!important}.tracked-entity-chart-area canvas[hidden]{display:none!important}.tracked-entity-legend{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr));gap:6px;max-height:200px;overflow:auto;padding:2px 4px 2px 2px;overscroll-behavior:contain}.tracked-entity-legend[hidden]{display:none!important}.tracked-entity-legend button{display:flex;align-items:center;gap:8px;min-width:0;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);color:var(--text);font-size:11px;text-align:left;cursor:pointer}.tracked-entity-legend button[aria-pressed="false"]{opacity:.48}.tracked-entity-legend button:focus-visible{outline:2px solid var(--lime);outline-offset:1px}.tracked-entity-legend-swatch{width:10px;height:10px;flex:none;border-radius:3px;background:var(--series-color)}.tracked-entity-legend-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-entity-detail .chart-head{flex-wrap:wrap;gap:8px 14px}.history-entity-detail .chart-date{flex:1;text-align:right}.history-detail-close{flex:none}@media(max-width:640px){.tracked-entity-chart-area{flex-basis:280px;height:280px}.tracked-entity-legend{max-height:180px}.history-entity-detail .chart-date{flex:1 1 100%;order:3;text-align:left}.history-detail-close{margin-left:auto}}
       .chart-entry-copy{min-width:0;flex:1}.history-save-button{flex:none;min-height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);color:var(--text);font-size:11px;font-weight:700;white-space:nowrap;cursor:pointer}.history-save-button:hover:not(:disabled){border-color:var(--lime);color:var(--lime)}.history-save-button:disabled{opacity:.7;cursor:default}.history-save-button[data-saved="true"]{border-color:#49633b;background:var(--lime-dark);color:var(--lime)}.focused-page .history-save-button{background:#fff;color:#172033;border-color:#e3e7ed}.focused-page .history-save-button:hover:not(:disabled){border-color:#18864b;color:#18864b}.focused-page .history-save-button[data-saved="true"]{background:#eef8f0;border-color:#b6d8bd;color:#176f3f}
+      .chart-save-button{display:block;margin:0 18px 12px auto;padding:8px 12px;font-size:12px}.chart-save-button[hidden]{display:none}
  </style>
   </head>
   <body>
@@ -66,7 +67,6 @@
         <div>
           <p class="nav-label">Live charts</p>
     <a class="nav-link" href="#live-daily-songs" data-page-nav="live-daily-songs"><span class="nav-glyph" aria-hidden="true">♪</span><span class="nav-text">Daily top songs</span></a>
-    <a class="nav-link" href="#live-daily-viral-songs" data-page-nav="live-daily-viral-songs"><span class="nav-glyph" aria-hidden="true">↗</span><span class="nav-text">Daily viral songs</span></a>
     <a class="nav-link" href="#live-weekly-songs" data-page-nav="live-weekly-songs"><span class="nav-glyph" aria-hidden="true">♪</span><span class="nav-text">Weekly top songs</span></a>
           <a class="nav-link" href="#live-daily-artists" data-page-nav="live-daily-artists"><span class="nav-glyph" aria-hidden="true">◎</span><span class="nav-text">Daily top artists</span></a>
           <a class="nav-link" href="#live-weekly-artists" data-page-nav="live-weekly-artists"><span class="nav-glyph" aria-hidden="true">◎</span><span class="nav-text">Weekly top artists</span></a>
@@ -87,7 +87,7 @@
         <div class="status-banner" id="status-banner" role="status" aria-live="polite"><span class="status-symbol" aria-hidden="true">i</span><span id="status-message"></span></div>
         <form class="filters" id="chart-form">
           <div class="field"><label for="country">Market</label><select id="country" name="country" required></select></div>
-          <div class="field"><label for="chart-type">Chart</label><select id="chart-type" name="type"><option value="daily_top_songs">Daily top songs</option><option value="daily_top_artists">Daily top artists</option><option value="daily_viral_songs">Daily viral songs</option><option value="weekly_top_songs">Weekly top songs</option><option value="weekly_top_artists">Weekly top artists</option><option value="weekly_top_albums">Weekly top albums</option></select></div>
+          <div class="field"><label for="chart-type">Chart</label><select id="chart-type" name="type"><option value="daily_top_songs">Daily top songs</option><option value="daily_top_artists">Daily top artists</option><option value="weekly_top_songs">Weekly top songs</option><option value="weekly_top_artists">Weekly top artists</option><option value="weekly_top_albums">Weekly top albums</option></select></div>
           <div class="field"><label for="chart-date">Date</label><input id="chart-date" name="date" type="text" value="latest" autocomplete="off" aria-describedby="date-help" /></div>
           <button class="load-button" id="load-button" type="submit" disabled>Load chart</button>
         </form>
@@ -99,6 +99,7 @@
         <p class="chart-search-status" id="chart-search-status" role="status" aria-live="polite" hidden></p>
         <section class="chart-card" aria-label="Spotify chart results">
           <div class="chart-head"><span class="chart-title" id="chart-title">Chart preview</span><span class="chart-date" id="chart-date-label">No chart loaded</span></div>
+          <button class="quiet-button chart-save-button" id="save-chart-button" type="button" hidden disabled>Save chart to history</button>
           <p class="table-scroll-hint" id="table-scroll-hint" aria-live="polite">Swipe or scroll horizontally to see all chart columns.</p>
           <p class="history-status" id="history-status" role="status" aria-live="polite" hidden></p>
           <div id="chart-content" class="empty"><div><span class="empty-icon" aria-hidden="true">♫</span><h3 id="empty-title">Connect your Spotify app</h3><p id="empty-copy">Add your Spotify app credentials to the project environment, connect your account, then load a live chart. No demo data is shown.</p></div></div>
@@ -206,7 +207,7 @@
           <section class="history-entity-detail" id="history-entity-detail" aria-labelledby="history-entity-detail-title" tabindex="-1" hidden>
             <div class="chart-head"><span class="chart-title" id="history-entity-detail-title">Entity history</span><span class="chart-date" id="history-entity-summary"></span><button class="quiet-button history-detail-close" id="history-entity-detail-close" type="button" aria-label="Close entity history details">Close</button></div>
             <div class="history-detail-filters">
-              <div class="field"><label for="history-detail-chart">Chart</label><select id="history-detail-chart"><option value="">Choose a chart</option><option value="daily_top_songs">Daily top songs</option><option value="daily_viral_songs">Daily viral songs</option><option value="weekly_top_songs">Weekly top songs</option><option value="daily_top_artists">Daily top artists</option><option value="weekly_top_artists">Weekly top artists</option><option value="weekly_top_albums">Weekly top albums</option></select></div>
+              <div class="field"><label for="history-detail-chart">Chart</label><select id="history-detail-chart"><option value="">Choose a chart</option><option value="daily_top_songs">Daily top songs</option><option value="weekly_top_songs">Weekly top songs</option><option value="daily_top_artists">Daily top artists</option><option value="weekly_top_artists">Weekly top artists</option><option value="weekly_top_albums">Weekly top albums</option></select></div>
               <div class="field"><label for="history-detail-country">Region</label><select id="history-detail-country" disabled><option value="">All regions</option></select></div>
               <div class="field"><label for="history-detail-from">From</label><input id="history-detail-from" type="date" /></div>
               <div class="field"><label for="history-detail-to">To</label><input id="history-detail-to" type="date" /></div>
@@ -261,10 +262,15 @@
       const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
       function showBanner(message, isError = false) {
         const banner = byId("status-banner");
+        const statusMessage = byId("status-message");
+        if (!banner || !statusMessage) return;
         banner.className = `status-banner show${isError ? " error" : ""}`;
-        byId("status-message").textContent = message;
+        statusMessage.textContent = message;
       }
-      function hideBanner() { byId("status-banner").className = "status-banner"; }
+      function hideBanner() {
+        const banner = byId("status-banner");
+        if (banner) banner.className = "status-banner";
+      }
       function updateTableScrollHint() {
         const tableWrap = byId("chart-content");
         byId("table-scroll-hint").classList.toggle("show", tableWrap.classList.contains("table-wrap") && tableWrap.scrollWidth > tableWrap.clientWidth);
@@ -395,13 +401,23 @@
         const metadata = payload.displayChart?.chartMetadata || {};
         const entries = payload.entries || [];
         activeChartEntries = entries;
+        const requestedDate = payload.requestedDate || chartContext.requestedDate;
+        if (chartContext.chartType.startsWith("weekly_") && chartContext.requestedDate !== "latest" && requestedDate !== chartContext.requestedDate) {
+          byId("chart-date").value = requestedDate;
+          showBanner(`Weekly charts are dated Thursdays. Showing the chart for ${requestedDate}, which covers the selected date ${chartContext.requestedDate}.`);
+        }
         activeChartContext = {
           chartType: chartContext.chartType,
           countryCode: chartContext.countryCode,
-          chartDate: payload.displayChart?.date || (chartContext.requestedDate === "latest" ? "" : chartContext.requestedDate),
-          requestedDate: chartContext.requestedDate,
+          chartDate: payload.displayChart?.date || (requestedDate === "latest" ? "" : requestedDate),
+          requestedDate,
         };
-        const canSaveSongs = ["daily_top_songs", "daily_viral_songs", "weekly_top_songs"].includes(activeChartContext.chartType);
+        const saveChartButton = byId("save-chart-button");
+        const canSaveWholeChart = ["daily_top_songs", "weekly_top_songs"].includes(activeChartContext.chartType);
+        saveChartButton.hidden = !canSaveWholeChart;
+        saveChartButton.disabled = !canSaveWholeChart || entries.length === 0;
+        saveChartButton.textContent = "Save chart to history";
+        const canSaveSongs = ["daily_top_songs", "weekly_top_songs"].includes(activeChartContext.chartType);
         const historyInfo = payload.chartHistory;
         const delivery = payload.delivery || {};
         const sourceTime = delivery.fetchedAt ? new Date(delivery.fetchedAt).toLocaleString() : "Live response";
@@ -491,6 +507,40 @@
           showBanner(error.message, true);
         }
       });
+      byId("save-chart-button").addEventListener("click", async () => {
+        const button = byId("save-chart-button");
+        if (!activeChartContext || button.disabled) return;
+        button.disabled = true;
+        button.textContent = "Saving chart…";
+        try {
+          const result = await requestJson("/api/history/save-chart", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              chart_type: activeChartContext.chartType,
+              country_code: activeChartContext.countryCode,
+              requested_date: activeChartContext.requestedDate,
+              chart_date: activeChartContext.chartDate,
+            }),
+          });
+          const savedCount = Number(result.savedEntries || 0);
+          const songLabel = savedCount === 1 ? "song" : "songs";
+          button.textContent = savedCount ? `Saved ${savedCount.toLocaleString()} ${songLabel}` : "Already in history";
+          button.dataset.saved = "true";
+          const savedMessage = savedCount
+            ? `Saved ${savedCount.toLocaleString()} ${songLabel} from ${result.chartDate} to history.`
+            : `All ${Number(result.chartEntries).toLocaleString()} eligible songs from ${result.chartDate} are already in history.`;
+          const excludedMessage = Number(result.excludedArchivedArtistEntries || 0) > 0
+            ? ` Skipped ${Number(result.excludedArchivedArtistEntries).toLocaleString()} entries by archived artists.`
+            : "";
+          showBanner(`${savedMessage}${excludedMessage}`);
+        } catch (error) {
+          button.disabled = false;
+          button.textContent = "Retry saving chart";
+          button.title = error.message;
+          showBanner(error.message, true);
+        }
+      });
       byId("chart-search-input").addEventListener("keydown", (event) => {
         if (event.key === "Enter" && (event.isComposing || event.keyCode === 229)) event.preventDefault();
       });
@@ -504,6 +554,8 @@
         event.preventDefault();
         const requestId = ++chartLoadSequence;
         const button = byId("load-button");
+        byId("save-chart-button").disabled = true;
+        document.querySelectorAll(".history-save-button").forEach((saveButton) => { saveButton.disabled = true; });
         const params = new URLSearchParams({ type: byId("chart-type").value, country: byId("country").value, date: byId("chart-date").value.trim() || "latest" });
         const chartContext = { chartType: params.get("type"), countryCode: params.get("country"), requestedDate: params.get("date") };
         button.disabled = true;
@@ -547,6 +599,7 @@
       } catch (error) {
         if (requestId === chartLoadSequence) {
           if (hadChart) {
+            byId("save-chart-button").disabled = true;
             byId("chart-date-label").textContent = "Update unavailable · previous chart remains visible";
           } else {
             byId("section-title").textContent = "Chart unavailable";

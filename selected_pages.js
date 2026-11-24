@@ -52,7 +52,7 @@
 
   function chartTypeName() {
     const names = {
-      daily_top_songs: "Daily top songs", daily_viral_songs: "Daily viral songs",
+      daily_top_songs: "Daily top songs",
       weekly_top_songs: "Weekly top songs", daily_top_artists: "Daily top artists",
       weekly_top_artists: "Weekly top artists", weekly_top_albums: "Weekly top albums",
     };
@@ -320,7 +320,6 @@
   function chartTypeLabel(chartType) {
     return {
       daily_top_songs: "Daily top songs",
-      daily_viral_songs: "Daily viral songs",
       weekly_top_songs: "Weekly top songs",
       daily_top_artists: "Daily top artists",
       weekly_top_artists: "Weekly top artists",
@@ -542,7 +541,7 @@
       byId("history-detail-country").innerHTML = '<option value="">All regions</option>' + countries.map((country) => `<option value="${escapeHtml(country.code)}">${escapeHtml(country.name)}</option>`).join("");
     }
     byId("history-detail-chart").innerHTML = '<option value="">Choose a chart</option>' + [
-      ["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"],
+      ["daily_top_songs", "Daily top songs"], ["weekly_top_songs", "Weekly top songs"],
       ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"],
       ["weekly_top_albums", "Weekly top albums"],
     ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
@@ -550,8 +549,8 @@
       const selected = entitySelect.selectedOptions[0];
       const type = selected?.dataset.type;
       const options = type === "artist"
-        ? [["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"], ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"], ["weekly_top_albums", "Weekly top albums"]]
-        : [["daily_top_songs", "Daily top songs"], ["daily_viral_songs", "Daily viral songs"], ["weekly_top_songs", "Weekly top songs"]];
+        ? [["daily_top_songs", "Daily top songs"], ["weekly_top_songs", "Weekly top songs"], ["daily_top_artists", "Daily top artists"], ["weekly_top_artists", "Weekly top artists"], ["weekly_top_albums", "Weekly top albums"]]
+        : [["daily_top_songs", "Daily top songs"], ["weekly_top_songs", "Weekly top songs"]];
       byId("tracking-chart").innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
     };
     entitySelect.onchange = setChartOptions;
@@ -792,7 +791,6 @@
     livePollTimer = null;
     const liveRoutes = {
       "live-daily-songs": { cadence: "daily", entityType: "track", title: "Daily top songs", type: "songs", chartType: "daily_top_songs" },
-      "live-daily-viral-songs": { cadence: "daily", entityType: "track", title: "Daily viral songs", type: "songs", chartType: "daily_viral_songs" },
       "live-weekly-songs": { cadence: "weekly", entityType: "track", title: "Weekly top songs", type: "songs", chartType: "weekly_top_songs" },
       "live-daily-artists": { cadence: "daily", entityType: "artist", title: "Daily top artists", type: "artists", chartType: "daily_top_artists" },
       "live-weekly-artists": { cadence: "weekly", entityType: "artist", title: "Weekly top artists", type: "artists", chartType: "weekly_top_artists" },

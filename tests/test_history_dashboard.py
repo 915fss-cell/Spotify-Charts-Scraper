@@ -52,11 +52,14 @@ class HistoryWriteConnection:
     def __init__(self):
         self.executed = []
         self.matching_uris = []
+        self.fetchval_results = []
 
     def transaction(self):
         return AsyncContextStub(self)
 
     async def fetchval(self, *_args):
+        if self.fetchval_results:
+            return self.fetchval_results.pop(0)
         return False
 
     async def fetch(self, *_args):
@@ -70,15 +73,49 @@ class HistoryWritePool:
     def __init__(self, connection, cached_row):
         self.connection = connection
         self.cached_row = cached_row
+        self.fetch_rows = []
 
-    async def fetchrow(self, *_args):
+    async def fetchrow(self, *args):
+        self.fetchrow_args = getattr(self, "fetchrow_args", [])
+        self.fetchrow_args.append(args)
         return self.cached_row
+
+    async def fetch(self, *_args):
+        return self.fetch_rows
 
     def acquire(self):
         return AsyncContextStub(self.connection)
 
 
 class HistoryDashboardTests(unittest.TestCase):
+    def test_weekly_chart_dates_map_to_thursday_chart_dates(self):
+        self.assertEqual(
+            app.canonical_chart_request_date("weekly_top_songs", "2024-12-14"),
+            "2024-12-12",
+        )
+        self.assertEqual(
+            app.canonical_chart_request_date("weekly_top_songs", "2024-12-12"),
+            "2024-12-12",
+        )
+        self.assertEqual(
+            app.canonical_chart_request_date("daily_top_songs", "2024-12-14"),
+            "2024-12-14",
+        )
+
+    def test_weekly_backfill_ranges_align_to_chart_dates(self):
+        self.assertEqual(
+            app.normalize_weekly_backfill_range(
+                "weekly_top_songs", date(2024, 12, 1), date(2024, 12, 14),
+            ),
+            (date(2024, 12, 5), date(2024, 12, 12)),
+        )
+        self.assertEqual(
+            app.normalize_weekly_backfill_range(
+                "weekly_top_songs", date(2024, 12, 14), date(2024, 12, 14),
+            ),
+            (date(2024, 12, 12), date(2024, 12, 12)),
+        )
+
     def test_chart_explorer_save_adds_cached_track_to_history(self):
         async def run():
             entry = {
@@ -117,6 +154,59 @@ class HistoryDashboardTests(unittest.TestCase):
             self.assertEqual(connection.executed[0][1][0], "spotify:track:fedcba9876543210")
             self.assertEqual(save_snapshot.await_args.args[3], date(2026, 11, 14))
             self.assertEqual(save_snapshot.await_args.args[4][0]["trackMetadata"]["trackUri"], "spotify:track:fedcba9876543210")
+            self.assertEqual(save_snapshot.await_args.kwargs["connection"], connection)
+
+        asyncio.run(run())
+
+    def test_chart_explorer_saves_all_cached_weekly_entries(self):
+        async def run():
+            entry = {
+                "trackMetadata": {
+                    "trackUri": "spotify:track:0123456789abcdef",
+                    "trackName": "Example song",
+                    "artists": [{"name": "Example artist"}],
+                },
+                "chartEntryData": {
+                    "currentRank": 1,
+                    "rankingMetric": {"type": "STREAMS", "value": "1,234"},
+                },
+            }
+            archived_entry = {
+                "trackMetadata": {
+                    "trackUri": "spotify:track:fedcba9876543210",
+                    "trackName": "Archived artist song",
+                    "artists": [{"name": "Taylor Swift"}],
+                },
+                "chartEntryData": {
+                    "currentRank": 2,
+                    "rankingMetric": {"type": "STREAMS", "value": "900"},
+                },
+            }
+            connection = HistoryWriteConnection()
+            connection.fetchval_results = [0, 1]
+            pool = HistoryWritePool(connection, {
+                "payload": {"displayChart": {"date": "2024-12-12"}, "entries": [entry, archived_entry]},
+                "chart_date": date(2024, 12, 12),
+            })
+            pool.fetch_rows = [{"entity_name": "taylor swift"}]
+            request = app.ChartHistorySaveInput(
+                chart_type="weekly_top_songs",
+                country_code="by",
+                requested_date="2024-12-14",
+                chart_date=date(2024, 12, 12),
+            )
+            with patch.object(app, "get_history_pool", new=AsyncMock(return_value=pool)), patch.object(
+                app, "require_spotify_connection"
+            ), patch.object(app, "save_chart_snapshot", new=AsyncMock(return_value=1)) as save_snapshot:
+                result = await app.save_chart_to_history(request)
+            self.assertEqual(result["savedEntries"], 1)
+            self.assertEqual(result["chartEntries"], 1)
+            self.assertEqual(result["chartDate"], "2024-12-12")
+            self.assertEqual(result["excludedArchivedArtistEntries"], 1)
+            self.assertEqual(pool.fetchrow_args[0][3], "2024-12-12")
+            self.assertEqual(save_snapshot.await_args.args[3], date(2024, 12, 12))
+            self.assertEqual(len(save_snapshot.await_args.args[4]), 1)
+            self.assertEqual(save_snapshot.await_args.args[4][0]["trackMetadata"]["trackName"], "Example song")
             self.assertEqual(save_snapshot.await_args.kwargs["connection"], connection)
 
         asyncio.run(run())

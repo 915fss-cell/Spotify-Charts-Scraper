@@ -474,6 +474,13 @@ class ChartEntryHistoryInput(BaseModel):
     track_uri: str = Field(min_length=16, max_length=128)
 
 
+class ChartHistorySaveInput(BaseModel):
+    chart_type: Literal["daily_top_songs", "weekly_top_songs"]
+    country_code: str = Field(min_length=2, max_length=6)
+    requested_date: str = Field(min_length=1, max_length=10)
+    chart_date: calendar_date
+
+
 class TrackingConfigInput(BaseModel):
     entity_uri: str = Field(min_length=16, max_length=128)
     chart_type: Literal[
@@ -508,6 +515,29 @@ CHART_METHODS = {
     "weekly_top_artists": "weekly_top_artists",
     "weekly_top_albums": "weekly_top_albums",
 }
+WEEKLY_CHART_TYPES = {"weekly_top_songs", "weekly_top_artists", "weekly_top_albums"}
+WEEKLY_CHART_ANCHOR_WEEKDAY = 3
+
+
+def canonical_chart_request_date(chart_type: str, requested_date: str) -> str:
+    if requested_date == "latest" or chart_type not in WEEKLY_CHART_TYPES:
+        return requested_date
+    selected_date = calendar_date.fromisoformat(requested_date)
+    days_since_chart_day = (selected_date.weekday() - WEEKLY_CHART_ANCHOR_WEEKDAY) % 7
+    return (selected_date - timedelta(days=days_since_chart_day)).isoformat()
+
+
+def normalize_weekly_backfill_range(
+    chart_type: str, start_date: calendar_date, end_date: calendar_date,
+) -> tuple[calendar_date, calendar_date]:
+    if chart_type not in WEEKLY_CHART_TYPES:
+        return start_date, end_date
+    target_date = calendar_date.fromisoformat(canonical_chart_request_date(chart_type, end_date.isoformat()))
+    if start_date > target_date:
+        return target_date, target_date
+    if start_date < target_date:
+        start_date += timedelta(days=(target_date.weekday() - start_date.weekday()) % 7)
+    return start_date, target_date
 
 
 @app.middleware("http")
@@ -728,6 +758,7 @@ async def save_chart_entry_to_history(request: ChartEntryHistoryInput) -> dict[s
                 raise ValueError
         except ValueError as error:
             raise HTTPException(status_code=400, detail="Date must be latest or YYYY-MM-DD.") from error
+    requested_date = canonical_chart_request_date(request.chart_type, request.requested_date)
     if not is_valid_entity_uri(request.track_uri, "track"):
         raise HTTPException(status_code=400, detail="Choose a valid Spotify song.")
 
@@ -736,7 +767,7 @@ async def save_chart_entry_to_history(request: ChartEntryHistoryInput) -> dict[s
         cached_row = await pool.fetchrow(
             """SELECT payload, chart_date FROM public.spotify_chart_payload_cache
                WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3""",
-            request.chart_type, country_code, request.requested_date,
+            request.chart_type, country_code, requested_date,
         )
         if cached_row is None:
             raise HTTPException(status_code=409, detail="Reload this chart before saving a song to history.")
@@ -820,6 +851,101 @@ async def save_chart_entry_to_history(request: ChartEntryHistoryInput) -> dict[s
         raise
     except Exception as error:
         raise HTTPException(status_code=503, detail="The song could not be saved to history right now.") from error
+
+
+@app.post("/api/history/save-chart")
+async def save_chart_to_history(request: ChartHistorySaveInput) -> dict[str, Any]:
+    require_spotify_connection()
+    country_code = request.country_code.upper()
+    if country_code not in {item.value for item in Countries}:
+        raise HTTPException(status_code=400, detail="Choose a country from the list.")
+    if request.requested_date != "latest":
+        try:
+            if calendar_date.fromisoformat(request.requested_date).isoformat() != request.requested_date:
+                raise ValueError
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Date must be latest or YYYY-MM-DD.") from error
+    requested_date = canonical_chart_request_date(request.chart_type, request.requested_date)
+
+    pool = await get_history_pool()
+    cached_row = await pool.fetchrow(
+        """SELECT payload, chart_date FROM public.spotify_chart_payload_cache
+           WHERE chart_type = $1 AND country_code = $2 AND requested_date = $3""",
+        request.chart_type, country_code, requested_date,
+    )
+    if cached_row is None:
+        raise HTTPException(status_code=409, detail="Reload this chart before saving it to history.")
+    payload = cached_row["payload"]
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            payload = None
+    if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
+        raise HTTPException(status_code=502, detail="The saved chart data is incomplete. Reload the chart and try again.")
+
+    chart_date = parse_chart_date(
+        (payload.get("displayChart") or {}).get("date") or payload.get("date") or cached_row["chart_date"]
+    )
+    if chart_date is None:
+        raise HTTPException(status_code=502, detail="The saved chart is missing its chart date.")
+    if chart_date != request.chart_date:
+        raise HTTPException(status_code=409, detail="The chart changed after it loaded. Reload and save it again.")
+
+    archived_artist_rows = await pool.fetch(
+        """SELECT lower(trim(entity_name)) AS entity_name
+           FROM public.spotify_chart_selections
+           WHERE entity_type = 'artist' AND is_archived = true"""
+    )
+    archived_artist_names = {row["entity_name"] for row in archived_artist_rows}
+    entries = []
+    excluded_archived_artist_entries = 0
+    for entry in payload["entries"]:
+        if not isinstance(entry, dict):
+            continue
+        uri = entry_entity_uri(entry)
+        metadata = entry.get("trackMetadata") or {}
+        artists = metadata.get("artists") or []
+        if not uri or not uri.startswith("spotify:track:") or snapshot_values(entry) is None:
+            continue
+        if any(
+            isinstance(artist, dict)
+            and str(artist.get("name") or "").strip().casefold() in archived_artist_names
+            for artist in artists
+        ):
+            excluded_archived_artist_entries += 1
+            continue
+        entries.append(entry)
+    if not entries:
+        raise HTTPException(status_code=422, detail="This chart does not contain savable song entries.")
+
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            existing_count = int(await connection.fetchval(
+                """SELECT count(*) FROM public.spotify_chart_snapshots
+                   WHERE chart_type = $1 AND country_code = $2 AND chart_date = $3""",
+                request.chart_type, country_code, chart_date,
+            ) or 0)
+            await save_chart_snapshot(
+                pool, request.chart_type, country_code, chart_date, entries, connection=connection,
+            )
+            total_count = int(await connection.fetchval(
+                """SELECT count(*) FROM public.spotify_chart_snapshots
+                   WHERE chart_type = $1 AND country_code = $2 AND chart_date = $3""",
+                request.chart_type, country_code, chart_date,
+            ) or 0)
+
+    newly_saved = max(0, total_count - existing_count)
+    return {
+        "saved": True,
+        "alreadySaved": newly_saved == 0,
+        "savedEntries": newly_saved,
+        "totalEntries": total_count,
+        "chartEntries": len(entries),
+        "excludedArchivedArtistEntries": excluded_archived_artist_entries,
+        "chartDate": chart_date.isoformat(),
+        "countryCode": country_code,
+    }
 
 
 @app.delete("/api/selections/{entity_uri:path}")
@@ -2610,6 +2736,7 @@ async def chart(
                 raise ValueError
         except ValueError as error:
             raise HTTPException(status_code=400, detail="Date must be latest or YYYY-MM-DD.") from error
+        date = canonical_chart_request_date(chart_type, date)
 
     require_spotify_connection()
     cached_row = None
@@ -2640,6 +2767,7 @@ async def chart(
                 "fetchedAt": cached_row["fetched_at"].isoformat(), "ageSeconds": age_seconds,
                 "isStale": stale, "refreshStatus": job_status,
             }
+            decorated["requestedDate"] = date
             return decorated
 
     scraper = await get_spotify_scraper()
@@ -2666,6 +2794,7 @@ async def chart(
         "fetchedAt": fetched_at.isoformat() if fetched_at else None,
         "ageSeconds": 0, "isStale": False, "refreshStatus": "fresh" if fetched_at else "uncached",
     }
+    result["requestedDate"] = date
     return result
 
 
@@ -2684,6 +2813,7 @@ async def refresh_chart(
                 raise ValueError
         except ValueError as error:
             raise HTTPException(status_code=400, detail="Date must be latest or YYYY-MM-DD.") from error
+        date = canonical_chart_request_date(chart_type, date)
     require_spotify_connection()
     pool = await get_history_pool()
     owner = secrets.token_urlsafe(18)
@@ -2849,6 +2979,7 @@ async def chart_history_backfill_progress(
     fingerprint = hashlib.sha256(entity_uri.encode("utf-8")).hexdigest()
     if end_date < start_date:
         raise HTTPException(status_code=400, detail="Backfill end date must be on or after its start date.")
+    start_date, end_date = normalize_weekly_backfill_range(chart_type, start_date, end_date)
     if (
         job is None
         or job["selection_fingerprint"] != fingerprint
@@ -2913,6 +3044,9 @@ async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[s
         raise HTTPException(status_code=400, detail="Choose a country from the list.")
     if request.start_date > request.target_date:
         raise HTTPException(status_code=400, detail="Backfill end date must be on or after its start date.")
+    start_date, target_date = normalize_weekly_backfill_range(
+        chart_type, request.start_date, request.target_date,
+    )
 
     entity_uris = list(dict.fromkeys(request.entity_uris))
     target_entity_uris = list(dict.fromkeys(request.target_entity_uris or [])) or None
@@ -2933,8 +3067,8 @@ async def chart_history_backfill(request: ChartHistoryBackfillRequest) -> dict[s
         return await run_durable_history_backfill_batch(
             chart_type,
             country,
-            request.target_date,
-            request.start_date,
+            target_date,
+            start_date,
             entity_uris,
             get_spotify_scraper,
             target_entity_uris=target_entity_uris,

@@ -8,11 +8,6 @@ on:
         type: boolean
         required: false
         default: false
-      daily_viral_songs:
-        description: Daily viral songs
-        type: boolean
-        required: false
-        default: false
       weekly_top_songs:
         description: Weekly top songs
         type: boolean
@@ -50,7 +45,6 @@ jobs:
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           DAILY_TOP_SONGS: ${{ inputs.daily_top_songs }}
-          DAILY_VIRAL_SONGS: ${{ inputs.daily_viral_songs }}
           WEEKLY_TOP_SONGS: ${{ inputs.weekly_top_songs }}
           DAILY_TOP_ARTISTS: ${{ inputs.daily_top_artists }}
           WEEKLY_TOP_ARTISTS: ${{ inputs.weekly_top_artists }}
@@ -68,7 +62,6 @@ jobs:
           }
 
           if [[ "${DAILY_TOP_SONGS}" == "true" ]]; then append_chart_type "daily_top_songs"; fi
-          if [[ "${DAILY_VIRAL_SONGS}" == "true" ]]; then append_chart_type "daily_viral_songs"; fi
           if [[ "${WEEKLY_TOP_SONGS}" == "true" ]]; then append_chart_type "weekly_top_songs"; fi
           if [[ "${DAILY_TOP_ARTISTS}" == "true" ]]; then append_chart_type "daily_top_artists"; fi
           if [[ "${WEEKLY_TOP_ARTISTS}" == "true" ]]; then append_chart_type "weekly_top_artists"; fi
